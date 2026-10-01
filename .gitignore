@@ -1,0 +1,17 @@
+node_modules/
+coverage/
+*.log
+*.tmp
+.DS_Store
+
+# runtime data (normally lives in HERMES_DATA_DIR, ~/.hermes-observer)
+.hermes-observer/
+state.json
+events.jsonl*
+ignore.json
+steer.json
+steer.jsonl
+token
+
+# local tooling
+.playwright-mcp/

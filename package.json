@@ -1,0 +1,25 @@
+{
+  "name": "hermes-observer",
+  "version": "0.1.0",
+  "description": "Zero-dependency observability and bounded steering for many parallel Claude Code sessions, with a REST + MCP read surface for an oversight agent.",
+  "license": "MIT",
+  "author": "Dominik Bauer",
+  "type": "module",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "observability",
+    "hooks",
+    "mcp",
+    "agents",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node collector.mjs",
+    "import": "node import-claude.mjs",
+    "test": "node --test"
+  }
+}
