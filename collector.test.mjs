@@ -12,6 +12,20 @@ import { newSession, buildOverviewRow, STALE_MS } from "./core.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
+// steer.jsonl is written through an async append stream, so an HTTP response can arrive
+// before its audit line is flushed. Poll until `re` matches (or time out) instead of a
+// single racy read.
+async function readAudit(dir, re, timeoutMs = 3000) {
+  const file = path.join(dir, "steer.jsonl");
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let txt = "";
+    try { txt = await fsp.readFile(file, "utf8"); } catch {}
+    if (re.test(txt) || Date.now() > deadline) return txt;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 function tmpDir(tag) {
   return fsp.mkdtemp(path.join(os.tmpdir(), `observer-${tag}-`));
 }
@@ -271,7 +285,7 @@ test("steering autonomous: nudge/context/block_tool deliver via /events, one-sho
     assert.match(preBash.hookSpecificOutput.permissionDecisionReason, /no migrations/);
 
     // audit log captured the lifecycle.
-    const audit = await fsp.readFile(path.join(dir, "steer.jsonl"), "utf8");
+    const audit = await readAudit(dir, /"ev":"arm"[\s\S]*"via":"PreToolUse"/);
     assert.match(audit, /"ev":"create"/);
     assert.match(audit, /"ev":"deliver"/);
     assert.match(audit, /"ev":"arm"/);
@@ -395,7 +409,7 @@ test("REST /api/steer ignores client-supplied `by` (audit attribution unforgeabl
     // Forge `by: "agent"` in the REST body; the server must record "operator" instead.
     const mk = await sapi(S.base, "/api/steer", { sessionId: "b1", kind: "nudge", text: "audit me", by: "agent" });
     assert.equal(mk.status, 200);
-    const audit = (await fsp.readFile(path.join(dir, "steer.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    const audit = (await readAudit(dir, new RegExp(`"ev":"create","id":"${mk.json.id}"`))).trim().split("\n").map((l) => JSON.parse(l));
     const create = audit.find((e) => e.ev === "create" && e.id === mk.json.id);
     assert.ok(create, "create entry present");
     assert.equal(create.by, "operator", "forged `by` ignored — attributed to the auth channel");
