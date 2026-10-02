@@ -11,7 +11,7 @@
 // state.json is never clobbered — the running collector owns it.
 //
 // Usage: node import-claude.mjs [--since 2026-05-01]
-//   env CLAUDE_DIR (default ~/.claude/projects), HERMES_DATA_DIR (default ~/.hermes-observer)
+//   env CLAUDE_DIR (default ~/.claude/projects), OBSERVER_DATA_DIR (default ~/.observer)
 
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -21,7 +21,7 @@ import readline from "node:readline";
 import { normalizeTranscriptLine, reduce, newSession, buildOverviewRow, STALE_MS } from "./core.mjs";
 
 const CLAUDE_DIR = process.env.CLAUDE_DIR || path.join(os.homedir(), ".claude", "projects");
-const DATA_DIR = process.env.HERMES_DATA_DIR || path.join(os.homedir(), ".hermes-observer");
+const DATA_DIR = process.env.OBSERVER_DATA_DIR || path.join(os.homedir(), ".observer");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 
 function parseArgs(argv) {

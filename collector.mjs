@@ -1,4 +1,4 @@
-// collector.mjs — the hermes-observer service.
+// collector.mjs — the observer service.
 //
 // Ingest (POST /events) ─► reduce (sync, in arrival order) ─► per-session state
 //                                                │
@@ -16,7 +16,7 @@
 // AUTH: the split is by ROUTE, never by source IP — `tailscale serve` (or any local
 // reverse proxy) forwards remote requests to loopback, so remoteAddress is an unreliable
 // signal. Every route except GET / — including POST /events and /mcp — requires
-// Bearer $HERMES_TOKEN when it is set.
+// Bearer $OBSERVER_TOKEN when it is set.
 
 import http from "node:http";
 import fs from "node:fs";
@@ -45,27 +45,27 @@ import {
 
 const execFileP = promisify(execFile);
 
-const PORT = parseInt(process.env.HERMES_PORT || "4000", 10);
+const PORT = parseInt(process.env.OBSERVER_PORT || "4000", 10);
 // Bind loopback by default (defense-in-depth): `tailscale serve` reaches the collector
 // over localhost, and local hooks post to localhost, so 127.0.0.1 exposes nothing to the
-// LAN. Override with HERMES_HOST only if you know you need a wider bind.
-const HOST = process.env.HERMES_HOST || "127.0.0.1";
-const TOKEN = process.env.HERMES_TOKEN || null;
+// LAN. Override with OBSERVER_HOST only if you know you need a wider bind.
+const HOST = process.env.OBSERVER_HOST || "127.0.0.1";
+const TOKEN = process.env.OBSERVER_TOKEN || null;
 // Optional summary provider: Vertex AI, gated on a service-account key.
 const VERTEX_CONFIG = loadVertexConfig();
 const vertex = VERTEX_CONFIG ? createVertex(VERTEX_CONFIG) : null;
-const DATA_DIR = process.env.HERMES_DATA_DIR || path.join(os.homedir(), ".hermes-observer");
+const DATA_DIR = process.env.OBSERVER_DATA_DIR || path.join(os.homedir(), ".observer");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const EVENTS_FILE = path.join(DATA_DIR, "events.jsonl");
 const IGNORE_FILE = path.join(DATA_DIR, "ignore.json");
 const STEER_FILE = path.join(DATA_DIR, "steer.json");
 const STEER_AUDIT_FILE = path.join(DATA_DIR, "steer.jsonl");
-// The collector writes HERMES_TOKEN here (0600) so the local launch wrapper can authenticate
+// The collector writes OBSERVER_TOKEN here (0600) so the local launch wrapper can authenticate
 // its pane registration without the token being in the session's env. Local-only.
 const TOKEN_FILE = path.join(DATA_DIR, "token");
-const ROTATE_BYTES = parseInt(process.env.HERMES_ROTATE_BYTES || String(64 * 1024 * 1024), 10);
-const ROTATE_KEEP = parseInt(process.env.HERMES_ROTATE_KEEP || "3", 10);
-const PRUNE_MS = parseInt(process.env.HERMES_PRUNE_MS || String(7 * 24 * 3600 * 1000), 10);
+const ROTATE_BYTES = parseInt(process.env.OBSERVER_ROTATE_BYTES || String(64 * 1024 * 1024), 10);
+const ROTATE_KEEP = parseInt(process.env.OBSERVER_ROTATE_KEEP || "3", 10);
+const PRUNE_MS = parseInt(process.env.OBSERVER_PRUNE_MS || String(7 * 24 * 3600 * 1000), 10);
 const PERSIST_MS = 15_000;
 
 const sessions = new Map(); // sessionId -> state
@@ -81,13 +81,13 @@ const panes = new Map(); // cwd -> { server, target, workspace?, terminalId?, ts
 
 // Repos/projects to hide from the discovery surfaces (list_sessions, digest).
 // Lowercased; matched against repo basename and cwd substring. Seeded from
-// HERMES_IGNORE, unioned with the persisted ignore.json, editable at runtime.
+// OBSERVER_IGNORE, unioned with the persisted ignore.json, editable at runtime.
 const ignored = new Set();
 
 // Steering — bounded write-back into live sessions (see steer.mjs). Default-deny:
 // nothing delivers unless the master switch is on AND the target session's mode is
 // opted in. All knobs are dashboard-editable and persisted to steer.json; env vars
-// are boot seeds only (runtime edits win), mirroring HERMES_IGNORE → ignore.json.
+// are boot seeds only (runtime edits win), mirroring OBSERVER_IGNORE → ignore.json.
 const steer = {
   master: false,                 // global kill switch
   defaultMode: "off",            // mode applied to sessions with no explicit setting
@@ -330,11 +330,11 @@ async function handle(req, res) {
   const p = url.pathname;
 
   // POST /events — hook ingest. Bearer-gated like every other write/read surface when
-  // HERMES_TOKEN is set (local hooks send the same token via a `headers` field; see
+  // OBSERVER_TOKEN is set (local hooks send the same token via a `headers` field; see
   // README "Hook installation"). The "loopback-trusted" assumption is NOT safe by itself:
   // `tailscale serve` proxies tailnet peers to loopback, so an unauthenticated /events
   // would let any tailnet caller spoof hooks and consume/read steering directives. The
-  // server also binds 127.0.0.1 (HERMES_HOST) so it is never LAN-exposed.
+  // server also binds 127.0.0.1 (OBSERVER_HOST) so it is never LAN-exposed.
   //
   // The response body IS hook output to Claude Code (synchronous http hooks): if a
   // steering directive is deliverable for this session+hook we return its hook JSON,
@@ -419,7 +419,7 @@ async function handle(req, res) {
           sessionId: b.sessionId || b.session_id, kind: b.kind, text: b.text,
           // Audit attribution reflects the auth channel, never the request body — the REST
           // surface is the operator's (bearer-gated). Ignoring client `by` keeps steer.jsonl
-          // attribution unforgeable (MCP hardcodes "hermes" for the same reason).
+          // attribution unforgeable (MCP hardcodes "agent" for the same reason).
           toolMatch: b.toolMatch || b.tool_match, ttlMs: b.ttlMs || b.ttl_ms, by: "operator",
         });
         return sendJSON(res, 200, d);
@@ -429,14 +429,14 @@ async function handle(req, res) {
   }
   // Pane registration — the tmux launch wrapper POSTs its tmux target here so the
   // collector can send-keys into the session while it's idle. Bearer-gated like the rest;
-  // the wrapper forwards HERMES_TOKEN. Joined to sessions by cwd.
+  // the wrapper forwards OBSERVER_TOKEN. Joined to sessions by cwd.
   if (req.method === "POST" && p === "/api/steer/pane") {
     let b; try { b = JSON.parse(await readBody(req)); } catch { return sendJSON(res, 400, { error: "bad json" }); }
     const cwd = b.cwd ? String(b.cwd) : "";
     const target = b.target ? String(b.target) : "";
     if (!cwd || !target) return sendJSON(res, 400, { error: "missing cwd/target" });
     const pane = {
-      server: b.server ? String(b.server) : "hermes", target,
+      server: b.server ? String(b.server) : "observer", target,
       workspace: b.workspace ? String(b.workspace) : undefined,
       terminalId: b.terminalId ? String(b.terminalId) : undefined,
       ts: Date.now(),
@@ -475,7 +475,7 @@ async function handle(req, res) {
   }
 
   // ── Control grants — OPERATOR ONLY (this surface is never exposed over MCP). ──
-  // grant/deny a Hermes request, or revoke an active grant. The consent boundary lives here.
+  // grant/deny an agent request, or revoke an active grant. The consent boundary lives here.
   if (p === "/api/control") {
     if (req.method === "GET") { const { grants, pendingControl } = steerSnapshot(); return sendJSON(res, 200, { grants, pendingControl }); }
     // POST /api/control — operator-initiated request (then immediately grantable below).
@@ -577,7 +577,7 @@ function seedIgnore() {
     if (Array.isArray(arr)) for (const e of arr) ignored.add(String(e).toLowerCase());
   } catch { /* none yet */ }
   // Env seed — always applied on boot.
-  for (const e of (process.env.HERMES_IGNORE || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
+  for (const e of (process.env.OBSERVER_IGNORE || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
     ignored.add(e);
   }
 }
@@ -617,16 +617,16 @@ function steerAudit(entry) {
 // Boot: defaults (in the `steer` literal) → env seeds → persisted overlay (authoritative,
 // so dashboard edits win and survive restart) → expire anything already past TTL.
 function seedSteer() {
-  const envMaster = (process.env.HERMES_STEERING || "").toLowerCase();
+  const envMaster = (process.env.OBSERVER_STEERING || "").toLowerCase();
   if (envMaster) steer.master = ["on", "1", "true", "yes"].includes(envMaster);
-  const envMode = normalizeMode(process.env.HERMES_STEER_DEFAULT_MODE);
+  const envMode = normalizeMode(process.env.OBSERVER_STEER_DEFAULT_MODE);
   if (envMode) steer.defaultMode = envMode;
-  const envTtl = parseInt(process.env.HERMES_STEER_TTL_MS || "", 10);
+  const envTtl = parseInt(process.env.OBSERVER_STEER_TTL_MS || "", 10);
   if (Number.isFinite(envTtl) && envTtl > 0) steer.ttlMs = envTtl;
-  const envKinds = (process.env.HERMES_STEER_AUTO_KINDS || "").split(",").map((s) => s.trim())
+  const envKinds = (process.env.OBSERVER_STEER_AUTO_KINDS || "").split(",").map((s) => s.trim())
     .filter((k) => STEER_KINDS.includes(k) && k !== "block_tool");
   if (envKinds.length) steer.autoKinds = envKinds;
-  const envHook = (process.env.HERMES_HOOK_STEERING || "").toLowerCase();
+  const envHook = (process.env.OBSERVER_HOOK_STEERING || "").toLowerCase();
   if (envHook) steer.hookSteering = ["on", "1", "true", "yes"].includes(envHook);
 
   try {
@@ -866,7 +866,7 @@ function steerCancel(id, by) {
   return d;
 }
 
-// ── Control grants — request (Hermes/MCP) → grant/deny/revoke (operator only) → release ──
+// ── Control grants — request (agent/MCP) → grant/deny/revoke (operator only) → release ──
 // The grant transition lives ONLY here and is reached only from the operator's REST surface
 // (dashboard); there is deliberately no MCP grant tool, so the agent can request and release
 // but can never grant itself control.
@@ -885,7 +885,7 @@ function controlRequest({ sessionId, task, ttlMs, by }) {
   const id = `g${++steer.grantSeq}`;
   const g = {
     id, sessionId, task: t, status: GRANT_STATUS.REQUESTED,
-    requestedBy: by || "hermes", requestedTs: now, ttlMs: ttl,
+    requestedBy: by || "agent", requestedTs: now, ttlMs: ttl,
     grantedBy: undefined, grantedTs: undefined, expiresTs: undefined,
     taskDone: false, endedTs: undefined, endReason: undefined,
   };
@@ -908,7 +908,7 @@ function controlGrant(id, by, ttlMs) {
   g.expiresTs = now + ttl; // TTL cap; task-done (release) can end it earlier
   steerAudit({ ev: "control_grant", id, sessionId: g.sessionId, by: g.grantedBy, ttlMs: ttl, task: g.task });
   saveSteer().catch(() => {});
-  maybeTmuxDeliver(g.sessionId); // if idle+pane and Hermes already queued, start now
+  maybeTmuxDeliver(g.sessionId); // if idle+pane and the agent already queued, start now
   return g;
 }
 
@@ -924,7 +924,7 @@ function controlDeny(id, by) {
   return g;
 }
 
-// End an active/pending grant. reason "released" = Hermes gave it back (safe, MCP-allowed);
+// End an active/pending grant. reason "released" = the agent gave it back (safe, MCP-allowed);
 // "revoked" = operator pulled it. Both are non-destructive — they just stop future autonomy.
 function controlEnd(id, by, reason) {
   const g = steer.grants.get(id);
@@ -939,10 +939,10 @@ function controlEnd(id, by, reason) {
   return g;
 }
 
-// Hermes releases by session id (it knows the session, not necessarily the grant id).
+// The agent releases by session id (it knows the session, not necessarily the grant id).
 function controlReleaseBySession(sid, by) {
   const g = activeGrantFor(sid) || pendingGrantFor(sid);
-  return g ? controlEnd(g.id, by || "hermes", "released") : null;
+  return g ? controlEnd(g.id, by || "agent", "released") : null;
 }
 
 // Compact per-session control state for the session detail + dashboard.
@@ -1055,7 +1055,7 @@ function sweepSteer(now) {
 // ---------------------------------------------------------------------------
 
 // The steer status for a session — three ORTHOGONAL axes plus a net verdict, so any agent
-// (Hermes over MCP, or the dashboard) gets one truthful answer with a reason. Deliberately
+// (the agent over MCP, or the dashboard) gets one truthful answer with a reason. Deliberately
 // age-agnostic: a long-idle ("stale") agent with a live pane is the PRIME steering target,
 // not an excluded one — staleness is a display hint, never a steer gate.
 //
@@ -1130,7 +1130,7 @@ async function apiDigest(sinceStr) {
 function apiSession(id) {
   const s = sessions.get(id);
   if (!s) return null;
-  // Augment the detail with steer status + control state so Hermes can poll (via
+  // Augment the detail with steer status + control state so the agent can poll (via
   // session_summary) whether it can steer / its request was granted, and the dashboard
   // can render the control row.
   return { ...buildDetail(s), steer: steerStatusFor(s), control: controlSummaryFor(id) };
@@ -1147,7 +1147,7 @@ function apiSessionEvents(id, typesStr, limit) {
 }
 
 // Bounded transcript tail for the MCP tool — reads only the last maxBytes from disk
-// (drops a partial leading line) so a huge transcript can't flood Hermes's context.
+// (drops a partial leading line) so a huge transcript can't flood the agent's context.
 function apiTranscriptText(id, maxBytes) {
   const s = sessions.get(id);
   if (!s || !s.transcriptPath || !fs.existsSync(s.transcriptPath)) return null;
@@ -1176,8 +1176,8 @@ const mcpApi = {
   sessionEvents: apiSessionEvents,
   transcriptText: apiTranscriptText,
   // Write surface — steering. steerCreate throws (disabled/non-steerable/bad input),
-  // which mcp.mjs turns into an isError result so Hermes gets a clear reason. On success we
-  // enrich with the session's reach so Hermes learns whether/when the directive will land
+  // which mcp.mjs turns into an isError result so the agent gets a clear reason. On success we
+  // enrich with the session's reach so the agent learns whether/when the directive will land
   // (e.g. armed but the session has no live pane → it waits, it won't vanish silently).
   steerCreate: (req) => {
     const d = steerCreate(req);
@@ -1191,12 +1191,12 @@ const mcpApi = {
     };
   },
   steerList,
-  steerCancel: (id) => steerCancel(id, "hermes"),
-  // Control — Hermes can REQUEST and RELEASE only. There is intentionally no grant here:
-  // granting is operator-only (REST/dashboard), so Hermes can never take control
+  steerCancel: (id) => steerCancel(id, "agent"),
+  // Control — the agent can REQUEST and RELEASE only. There is intentionally no grant here:
+  // granting is operator-only (REST/dashboard), so the agent can never take control
   // of a session without explicit human consent.
-  controlRequest: (req) => controlRequest({ ...req, by: "hermes" }),
-  controlRelease: (sid) => controlReleaseBySession(sid, "hermes"),
+  controlRequest: (req) => controlRequest({ ...req, by: "agent" }),
+  controlRelease: (sid) => controlReleaseBySession(sid, "agent"),
 };
 
 // Prune ended/stale sessions to bound long-run memory.
@@ -1233,9 +1233,9 @@ async function main() {
   pruneTimer = setInterval(() => { pruneSessions(); sweepSteer(Date.now()); }, 60 * 60 * 1000);
 
   server.listen(PORT, HOST, () => {
-    console.log(`hermes-observer listening on ${HOST}:${PORT}`);
+    console.log(`observer listening on ${HOST}:${PORT}`);
     console.log(`  summaries: ${vertex ? `enabled (vertex ${VERTEX_CONFIG.model}, project ${VERTEX_CONFIG.project})` : "disabled (no GOOGLE_APPLICATION_CREDENTIALS)"}`);
-    console.log(`  auth: ${TOKEN ? "bearer required on /events,/api,/stream,/transcript,/mcp" : "open (HERMES_TOKEN unset — dev mode)"}`);
+    console.log(`  auth: ${TOKEN ? "bearer required on /events,/api,/stream,/transcript,/mcp" : "open (OBSERVER_TOKEN unset — dev mode)"}`);
     console.log(`  mcp: POST /mcp (remote MCP, ${TOOLS.length} tools: ${TOOLS.map((t) => t.name).join(", ")})`);
     console.log(`  steering: ${steer.master ? "on" : "off"} (default mode ${steer.defaultMode}, hook-delivery ${steer.hookSteering ? "on" : "off (idle-pane only)"}, ${steer.modes.size} session override(s), ${steerSnapshot().pending} pending approval)`);
     console.log(`  ignore: ${ignored.size ? [...ignored].sort().join(", ") : "(none)"}`);
@@ -1258,7 +1258,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // Embedded dashboard — vanilla, self-contained, dark ops-console.
-const DASHBOARD_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>hermes-observer</title>
+const DASHBOARD_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>observer</title>
 <style>
 :root{--bg:#0b0e14;--fg:#c9d1d9;--dim:#6e7681;--line:#1c2128;--acc:#58a6ff;--warn:#f0b429;--err:#f85149;--ok:#3fb950}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -1305,7 +1305,7 @@ tr.row:hover .ign{opacity:1}.ign:hover{color:var(--err)}
 .pendpanel .dir{padding:1px 0}
 </style></head><body>
 <header>
-<h1>hermes-observer</h1>
+<h1>observer</h1>
 <label>window <select id="win"><option>15m</option><option selected>30m</option><option>2h</option><option>12h</option></select></label>
 <label><input type="checkbox" id="active"> active only</label>
 <label><input type="checkbox" id="auto" checked> auto</label>
@@ -1337,13 +1337,13 @@ const $=s=>document.querySelector(s);
 let open=new Set();
 let steerState={master:false,defaultMode:'off',ttlMs:900000,autoKinds:['context','nudge','decide'],hookSteering:false,modes:{},directives:[],pending:0,grants:[],pendingControl:0};
 // Per-row steer chip: permission, pane (reach) and net canSteer in one glance. Mirrors the
-// steer object the MCP surface exposes, so dashboard and Hermes read the same vocabulary.
+// steer object the MCP surface exposes, so dashboard and the agent read the same vocabulary.
 function steerChip(st){
   if(!st)return '';
   const p=[];
   if(st.awaitingDecision)p.push('<span title="awaiting '+(st.awaitingDecision==='plan'?'plan approval':'an answer')+' — send a decide directive" style="color:var(--warn)">'+(st.awaitingDecision==='plan'?'⏯plan?':'❓ask?')+'</span>');
   if(st.pendingControl)p.push('<span title="control requested — awaiting your approval" style="color:var(--warn)">⏳control?</span>');
-  if(st.controlled)p.push('<span title="controlled by Hermes: '+esc(st.grantTask||'')+'" style="color:var(--ok)">🎮'+age(st.grantExpiresMs||0)+'</span>');
+  if(st.controlled)p.push('<span title="controlled by the agent: '+esc(st.grantTask||'')+'" style="color:var(--ok)">🎮'+age(st.grantExpiresMs||0)+'</span>');
   else if(st.permission==='approval')p.push('<span title="approval mode — you approve each directive">✋</span>');
   else if(st.permission==='autonomous')p.push('<span title="autonomous">⚡</span>');
   else p.push('<span title="not permitted (mode off)" style="color:var(--dim)">🔒</span>');
@@ -1352,9 +1352,9 @@ function steerChip(st){
   if((st.controlled||st.permission!=='off')&&!st.canSteer&&st.why)p.push('<span title="'+esc(st.why)+'" style="color:var(--warn)">⚠</span>');
   return ' '+p.join(' ');
 }
-// Auth: the read API is bearer-gated, so the dashboard sends HERMES_TOKEN too.
-function getTok(){return localStorage.getItem('hermes_token')||''}
-function askTok(){const t=prompt('HERMES_TOKEN (blank if the collector runs without one):',getTok());if(t!==null)localStorage.setItem('hermes_token',t);}
+// Auth: the read API is bearer-gated, so the dashboard sends OBSERVER_TOKEN too.
+function getTok(){return localStorage.getItem('observer_token')||''}
+function askTok(){const t=prompt('OBSERVER_TOKEN (blank if the collector runs without one):',getTok());if(t!==null)localStorage.setItem('observer_token',t);}
 // Prompt for the token at most once per failure streak — a cancelled prompt must not re-open
 // on every 4s refresh. The token button clears the flag and asks again.
 let authBlocked=false;
@@ -1461,7 +1461,7 @@ function renderPending(){
   if(!pend.length&&!creq.length){el.style.display='none';el.innerHTML='';return;}
   el.style.display='';
   let h='';
-  if(creq.length)h+='<span class=kv>control requests (Hermes wants to take over):</span>'+creq.map(g=>
+  if(creq.length)h+='<span class=kv>control requests (the agent wants to take over):</span>'+creq.map(g=>
     '<div class=dir><span class=kv>'+esc(g.sessionId.slice(0,8))+'</span> <b style="color:var(--warn)">🎮 '+esc((g.task||'').slice(0,90))+'</b> '+
     '<span class=kv>('+Math.round((g.ttlMs||0)/60000)+'m, by '+esc(g.requestedBy||'')+')</span> '+
     '<button data-cg="'+esc(g.id)+'">approve</button> <button data-cd="'+esc(g.id)+'">deny</button></div>').join('');

@@ -11,7 +11,7 @@ const PRIV = privateKey.export({ type: "pkcs8", format: "pem" });
 const PUB = publicKey.export({ type: "spki", format: "pem" });
 
 const fakeCreds = {
-  client_email: "hermes@proj.iam.gserviceaccount.com",
+  client_email: "observer@proj.iam.gserviceaccount.com",
   private_key: PRIV,
   token_uri: "https://oauth2.googleapis.com/token",
   project_id: "proj-123",

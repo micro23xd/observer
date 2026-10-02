@@ -1,4 +1,4 @@
-// mcp.mjs — Model Context Protocol layer for Hermes (zero deps).
+// mcp.mjs — Model Context Protocol layer for the oversight agent (zero deps).
 //
 // Pure protocol: handleMcpMessage(msg, api) turns one JSON-RPC 2.0 message into a
 // response object (or null for notifications). It is transport- and storage-agnostic —
@@ -7,10 +7,10 @@
 // view builders the REST routes use.
 
 export const PROTOCOL_VERSION = "2025-06-18";
-export const SERVER_INFO = { name: "hermes-observer", version: "0.1.0" };
+export const SERVER_INFO = { name: "observer", version: "0.1.0" };
 
 // Read tiers (list_sessions … session_transcript) plus the steering/control write tools,
-// mirroring docs/hermes-agent-guide.md. Descriptions teach the agent the tiered-access
+// mirroring docs/agent-guide.md. Descriptions teach the agent the tiered-access
 // discipline (cheap → deep) and the steering guardrails.
 export const TOOLS = [
   {
@@ -202,7 +202,7 @@ export async function handleMcpMessage(msg, api) {
     case "tools/call": {
       const name = params?.name;
       const args = params?.arguments || {};
-      // Tool execution errors are returned as isError results (so Hermes sees them),
+      // Tool execution errors are returned as isError results (so the agent sees them),
       // not JSON-RPC errors.
       try {
         return ok(id, { content: [{ type: "text", text: await dispatch(name, args, api) }] });
@@ -251,7 +251,7 @@ async function dispatch(name, args, api) {
         text: reqArg(args, "text"),
         toolMatch: args.tool_match,
         ttlMs: args.ttl_ms,
-        by: "hermes",
+        by: "agent",
       });
       return JSON.stringify(d);
     }

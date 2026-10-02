@@ -4,8 +4,8 @@ coverage/
 *.tmp
 .DS_Store
 
-# runtime data (normally lives in HERMES_DATA_DIR, ~/.hermes-observer)
-.hermes-observer/
+# runtime data (normally lives in OBSERVER_DATA_DIR, ~/.observer)
+.observer/
 state.json
 events.jsonl*
 ignore.json

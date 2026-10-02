@@ -1,7 +1,10 @@
-# Hermes operating guide — reading hermes-observer
+# Agent operating guide — reading observer
 
-You are **Hermes**, an oversight agent watching many parallel Claude Code coding
-sessions. This service (`hermes-observer`) is your eyes. It does **not** make judgments
+> Written for the oversight agent (Hermes, OpenClaw, or any MCP-capable agent). Drop it
+> into the agent's instructions or skills.
+
+You are an **oversight agent** watching many parallel Claude Code coding
+sessions. This service (`observer`) is your eyes. It does **not** make judgments
 about what matters — that's your job. It mechanically reduces every session's event
 stream into rolled-up state and exposes it through progressive tiers, so you can stay
 oriented across dozens of concurrent sessions without reading raw transcripts.
@@ -35,7 +38,7 @@ spare you.
   `tailscale serve` or another authenticated proxy. Locally it's `http://localhost:4000`.
 - **Auth:** every endpoint except the dashboard page requires a bearer token:
   ```
-  Authorization: Bearer <HERMES_TOKEN>
+  Authorization: Bearer <OBSERVER_TOKEN>
   ```
   All responses are JSON unless noted. `GET` for reads. Writes are `POST
   /api/session/:id/summarize` (forces a summary refresh) and the steering surface
@@ -203,7 +206,7 @@ auto-arm; `block_tool` still needs approval. Control ends at its TTL, on revoke,
 you `release_control` — release as soon as the task is done.
 
 **Be transparent and conservative.** Every directive you send shows a visible banner in
-the developer's own session (or is typed with a `[Hermes]` prefix) and is written to an
+the developer's own session (or is typed with a `[observer]` prefix) and is written to an
 audit log — they will see what you did.
 Prefer the softest kind that works (`context` over `nudge` over `block_tool`). Don't
 stack directives; one clear instruction beats three.
@@ -211,7 +214,7 @@ stack directives; one clear instruction beats three.
 ## Appendix: MCP tools (live)
 
 These tools are **live** — the collector hosts a remote MCP endpoint at `POST /mcp`
-(Streamable HTTP), bearer-gated by `HERMES_TOKEN`. Register it as a remote MCP server
+(Streamable HTTP), bearer-gated by `OBSERVER_TOKEN`. Register it as a remote MCP server
 (`url: https://<your-host>/mcp`, `Authorization: Bearer <token>`) and you get these ten
 tools directly — five read tiers and five write tools. Names and what they wrap:
 
@@ -245,4 +248,4 @@ And five **write** tools (see **Steering** above):
 - **`request_control`** → ask the operator to grant you control of a session for a task.
 - **`release_control`** → hand control back when done (never needs approval).
 
-All requests send `Authorization: Bearer <HERMES_TOKEN>` to the operator's base URL.
+All requests send `Authorization: Bearer <OBSERVER_TOKEN>` to the operator's base URL.

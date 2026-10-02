@@ -39,7 +39,7 @@ export function loadVertexConfig(env = process.env) {
     creds,
     project: env.VERTEX_PROJECT || creds.project_id,
     location: env.VERTEX_LOCATION || "global",
-    model: env.HERMES_MODEL || DEFAULT_MODEL,
+    model: env.OBSERVER_MODEL || DEFAULT_MODEL,
   };
 }
 

@@ -24,7 +24,7 @@ test("initialize: echoes protocolVersion and advertises tools capability", async
   assert.equal(r.id, 1);
   assert.equal(r.result.protocolVersion, "2025-06-18");
   assert.deepEqual(r.result.capabilities, { tools: {} });
-  assert.equal(r.result.serverInfo.name, "hermes-observer");
+  assert.equal(r.result.serverInfo.name, "observer");
 });
 
 test("initialize: falls back to pinned version when client omits it", async () => {

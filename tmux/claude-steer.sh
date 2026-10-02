@@ -1,6 +1,6 @@
 #!/bin/bash
 # claude-steer.sh — launch wrapper that makes a Claude Code session externally
-# steerable by hermes-observer, *including while it sits idle*.
+# steerable by observer, *including while it sits idle*.
 #
 # WHY: Claude Code fires hooks only while a turn is active, so the collector can't
 # deliver a steering directive to an idle session through the hook response. Running
@@ -18,10 +18,10 @@
 
 set -u
 
-HERMES="${HERMES_URL:-http://localhost:4000}"
-TMUX_SERVER="${HERMES_TMUX_SERVER:-hermes}"
+OBSERVER="${OBSERVER_URL:-http://localhost:4000}"
+TMUX_SERVER="${OBSERVER_TMUX_SERVER:-observer}"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONF="$SELF_DIR/hermes.tmux.conf"
+CONF="$SELF_DIR/observer.tmux.conf"
 
 # Resolve the REAL claude binary — skip Superset's shim/wrapper dirs and our own dir so
 # we don't recurse into ourselves or back into the shim.
@@ -57,10 +57,10 @@ SESS="${SAFE_WS}-$$"
 # realpath to keep the join symlink-safe (e.g. /tmp vs /private/tmp on macOS).
 CWD_P="$(pwd -P 2>/dev/null || printf '%s' "$PWD")"
 
-# Bearer token: /api/steer/pane is gated. Launchers often do NOT export HERMES_TOKEN into
+# Bearer token: /api/steer/pane is gated. Launchers often do NOT export OBSERVER_TOKEN into
 # the session env, so fall back to the 0600 token file the collector drops in its data dir.
-TOKEN="${HERMES_TOKEN:-}"
-TOKEN_FILE="${HERMES_DATA_DIR:-$HOME/.hermes-observer}/token"
+TOKEN="${OBSERVER_TOKEN:-}"
+TOKEN_FILE="${OBSERVER_DATA_DIR:-$HOME/.observer}/token"
 [ -z "$TOKEN" ] && [ -r "$TOKEN_FILE" ] && TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
 
 # Minimal JSON string escaping (backslash, then double quote) so an odd cwd or workspace
@@ -70,14 +70,14 @@ json_esc() { local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
 # Tell the collector where to type. Fire-and-forget, 1s cap, errors ignored — never let
 # a slow/absent collector delay the user's session. SUPERSET_TERMINAL_ID is passed along
 # as a stable secondary key when present (seen in Superset's own agent wrappers).
-curl -fsS -m 1 -X POST "$HERMES/api/steer/pane" \
+curl -fsS -m 1 -X POST "$OBSERVER/api/steer/pane" \
   ${TOKEN:+-H "Authorization: Bearer $TOKEN"} \
   -H 'content-type: application/json' \
   -d "{\"cwd\":\"$(json_esc "$CWD_P")\",\"server\":\"$(json_esc "$TMUX_SERVER")\",\"target\":\"$SESS\",\"workspace\":\"$(json_esc "$WS")\",\"terminalId\":\"$(json_esc "${SUPERSET_TERMINAL_ID:-}")\"}" \
   >/dev/null 2>&1 &
 
 # Config is only read when the server FIRST starts (the -f below). Re-apply it to an
-# already-running server so edits to hermes.tmux.conf propagate to new sessions without a
+# already-running server so edits to observer.tmux.conf propagate to new sessions without a
 # server restart — its options are all global/idempotent, so re-sourcing is safe.
 tmux -L "$TMUX_SERVER" source-file "$CONF" >/dev/null 2>&1 || true
 

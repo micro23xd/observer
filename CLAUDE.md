@@ -4,11 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`hermes-observer` is an observability service for many parallel Claude Code sessions.
+`observer` is an observability service for many parallel Claude Code sessions.
 Claude Code hooks POST every lifecycle event to the collector, which **reduces** them
-into per-session rollup state. An oversight agent ("Hermes") reads tiered views over the
-tailnet and can optionally **steer** live sessions back. Despite the repo name
-(`claude-collector`), the product/package name is `hermes-observer`.
+into per-session rollup state. An oversight agent (e.g. Hermes, OpenClaw, any MCP
+client) reads tiered views over REST/MCP and can optionally **steer** live sessions back.
 
 Zero runtime dependencies (Node ≥ 20 built-ins only — `http`, `fetch`, `crypto`,
 `readline`). No `npm install`. Single long-lived process.
@@ -66,7 +65,7 @@ imported transcript line ─┘                                      │
 - **`import-claude.mjs`** — one-shot backfill; groups transcript events by session,
   reduces per session, downgrades historical active sessions to `idle`, merges into
   `state.json` without clobbering a live session.
-- **`tmux/claude-steer.sh` + `tmux/hermes.tmux.conf`** — optional launch wrapper that runs
+- **`tmux/claude-steer.sh` + `tmux/observer.tmux.conf`** — optional launch wrapper that runs
   `claude` inside a dedicated tmux server and registers the pane (`POST /api/steer/pane`)
   so the collector can type directives into idle sessions (`send-keys`).
 
@@ -77,8 +76,8 @@ imported transcript line ─┘                                      │
   order-tolerant; `status`/`now`/`lastPrompt` apply only when the event is the latest
   seen (`isLatest`), so a replayed older `SessionEnd` can't mark a live session ended.
 - **Auth is by ROUTE, never source IP.** `tailscale serve` reverse-proxies tailnet peers
-  to loopback, so `remoteAddress` can't distinguish Hermes from a local hook. `POST
-  /events` is therefore bearer-gated too (when `HERMES_TOKEN` is set) — an open `/events`
+  to loopback, so `remoteAddress` can't distinguish a remote agent from a local hook. `POST
+  /events` is therefore bearer-gated too (when `OBSERVER_TOKEN` is set) — an open `/events`
   would let any tailnet peer spoof hooks and consume steering directives. `GET /`
   (dashboard) is the only tokenless route and binds `127.0.0.1`.
 - **Ingest is fully non-blocking and defensive.** `POST /events` always responds (steer
@@ -104,7 +103,7 @@ Write tools (steering): `steer_session`, `list_steers`, `cancel_steer`. Plus `GE
 (SSE) and `POST /api/session/:id/summarize`. The MCP endpoint is `POST /mcp` (Streamable
 HTTP, stateless JSON-RPC) — no separate process.
 
-## Persistence (in `HERMES_DATA_DIR`, default `~/.hermes-observer`)
+## Persistence (in `OBSERVER_DATA_DIR`, default `~/.observer`)
 - `state.json` — rollups; atomic temp+rename every ~15s and on signal. Buffers are NOT
   persisted here.
 - `events.jsonl` — append-only durable log, rotated by size; per-session ring buffers

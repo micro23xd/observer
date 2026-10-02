@@ -13,20 +13,20 @@ import { newSession, buildOverviewRow, STALE_MS } from "./core.mjs";
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
 function tmpDir(tag) {
-  return fsp.mkdtemp(path.join(os.tmpdir(), `hermes-${tag}-`));
+  return fsp.mkdtemp(path.join(os.tmpdir(), `observer-${tag}-`));
 }
 
 function cleanEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HERMES_")));
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("OBSERVER_")));
 }
 
 // Spawn the collector, wait until it logs "listening", return handle.
 async function startCollector(env, port) {
   const proc = spawn(process.execPath, [path.join(HERE, "collector.mjs")], {
-    // Neutralize the dev's real Vertex creds and any HERMES_* config in the shell (e.g. a
-    // HERMES_TOKEN would 401 the open-mode tests) so tests control behavior explicitly;
+    // Neutralize the dev's real Vertex creds and any OBSERVER_* config in the shell (e.g. a
+    // OBSERVER_TOKEN would 401 the open-mode tests) so tests control behavior explicitly;
     // callers re-enable what they need via `env`.
-    env: { ...cleanEnv(), GOOGLE_APPLICATION_CREDENTIALS: "", HERMES_PORT: String(port), ...env },
+    env: { ...cleanEnv(), GOOGLE_APPLICATION_CREDENTIALS: "", OBSERVER_PORT: String(port), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -62,7 +62,7 @@ const SEQ = [
 let H, DIR;
 before(async () => {
   DIR = await tmpDir("main");
-  H = await startCollector({ HERMES_DATA_DIR: DIR }, 4101); // no token => open
+  H = await startCollector({ OBSERVER_DATA_DIR: DIR }, 4101); // no token => open
 });
 after(async () => { await stop(H); await fsp.rm(DIR, { recursive: true, force: true }); });
 
@@ -235,7 +235,7 @@ const hook = async (base, body) => (await post(base, body)).json();
 test("steering autonomous: nudge/context/block_tool deliver via /events, one-shot", async () => {
   const dir = await tmpDir("steer-auto");
   // hook delivery is opt-in (default off); this test exercises that channel explicitly.
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_HOOK_STEERING: "on" }, 4103);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_HOOK_STEERING: "on" }, 4103);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "k1", cwd: "/x/steerme" });
     await sapi(S.base, "/api/steer/mode", { sessionId: "k1", mode: "autonomous" });
@@ -245,8 +245,8 @@ test("steering autonomous: nudge/context/block_tool deliver via /events, one-sho
     assert.equal(mk.json.status, "armed");
     const stop1 = await hook(S.base, { hook_event_name: "Stop", session_id: "k1" });
     assert.equal(stop1.decision, "block");
-    assert.match(stop1.reason, /\[Hermes\] add error-path tests/);
-    assert.match(stop1.systemMessage, /Hermes steered this session/);
+    assert.match(stop1.reason, /\[observer\] add error-path tests/);
+    assert.match(stop1.systemMessage, /observer steered this session/);
     // one-shot: a second Stop is a plain ack.
     const stop2 = await hook(S.base, { hook_event_name: "Stop", session_id: "k1" });
     assert.deepEqual(stop2, { ok: true });
@@ -255,7 +255,7 @@ test("steering autonomous: nudge/context/block_tool deliver via /events, one-sho
     await sapi(S.base, "/api/steer", { sessionId: "k1", kind: "context", text: "prefer fp style" });
     const ups = await hook(S.base, { hook_event_name: "UserPromptSubmit", session_id: "k1", prompt: "go" });
     assert.equal(ups.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-    assert.match(ups.hookSpecificOutput.additionalContext, /\[Hermes\] prefer fp style/);
+    assert.match(ups.hookSpecificOutput.additionalContext, /\[observer\] prefer fp style/);
 
     // block_tool stays PROPOSED even in autonomous (needs approval); Bash not blocked yet.
     const bt = await sapi(S.base, "/api/steer", { sessionId: "k1", kind: "block_tool", text: "no migrations", tool_match: "Bash" });
@@ -280,7 +280,7 @@ test("steering autonomous: nudge/context/block_tool deliver via /events, one-sho
 
 test("steering approval + master switch gate delivery", async () => {
   const dir = await tmpDir("steer-appr");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_HOOK_STEERING: "on" }, 4104);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_HOOK_STEERING: "on" }, 4104);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "a1", cwd: "/x/appr" });
     await sapi(S.base, "/api/steer/mode", { sessionId: "a1", mode: "approval" });
@@ -319,7 +319,7 @@ test("steering approval + master switch gate delivery", async () => {
 
 test("steering MCP write tools: steer_session + list_steers + cancel_steer over /mcp", async () => {
   const dir = await tmpDir("steer-mcp");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" }, 4105);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" }, 4105);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "m1", cwd: "/x/mcpsteer" });
     const rpc = async (msg) => (await fetch(`${S.base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg) })).json();
@@ -339,7 +339,7 @@ test("steering MCP write tools: steer_session + list_steers + cancel_steer over 
 
 test("6. auth: bearer required for non-loopback model (token set)", async () => {
   const dir = await tmpDir("auth");
-  const A = await startCollector({ HERMES_DATA_DIR: dir, HERMES_TOKEN: "secret" }, 4102);
+  const A = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_TOKEN: "secret" }, 4102);
   try {
     const noTok = await fetch(`${A.base}/api/sessions`);
     assert.equal(noTok.status, 401, "no token => 401");
@@ -365,7 +365,7 @@ test("6. auth: bearer required for non-loopback model (token set)", async () => 
 test("unauthenticated /events cannot consume an armed steering directive", async () => {
   const dir = await tmpDir("c1");
   // Token set AND steering on: this is the production posture an attacker faces.
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_TOKEN: "sek", HERMES_STEERING: "on", HERMES_HOOK_STEERING: "on" }, 4106);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_TOKEN: "sek", OBSERVER_STEERING: "on", OBSERVER_HOOK_STEERING: "on" }, 4106);
   const auth = { authorization: "Bearer sek" };
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "v1", cwd: "/x/victim" }, auth);
@@ -389,11 +389,11 @@ test("unauthenticated /events cannot consume an armed steering directive", async
 
 test("REST /api/steer ignores client-supplied `by` (audit attribution unforgeable)", async () => {
   const dir = await tmpDir("by");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" }, 4107);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" }, 4107);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "b1", cwd: "/x/by" });
-    // Forge `by: "hermes"` in the REST body; the server must record "operator" instead.
-    const mk = await sapi(S.base, "/api/steer", { sessionId: "b1", kind: "nudge", text: "audit me", by: "hermes" });
+    // Forge `by: "agent"` in the REST body; the server must record "operator" instead.
+    const mk = await sapi(S.base, "/api/steer", { sessionId: "b1", kind: "nudge", text: "audit me", by: "agent" });
     assert.equal(mk.status, 200);
     const audit = (await fsp.readFile(path.join(dir, "steer.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
     const create = audit.find((e) => e.ev === "create" && e.id === mk.json.id);
@@ -425,7 +425,7 @@ test("8. importer populates state.json", async () => {
 
   await new Promise((res, rej) => {
     const p = spawn(process.execPath, [path.join(HERE, "import-claude.mjs")], {
-      env: { ...cleanEnv(), CLAUDE_DIR: cdir, HERMES_DATA_DIR: dir }, stdio: "inherit",
+      env: { ...cleanEnv(), CLAUDE_DIR: cdir, OBSERVER_DATA_DIR: dir }, stdio: "inherit",
     });
     p.on("exit", (c) => (c === 0 ? res() : rej(new Error("import exit " + c))));
   });
@@ -450,16 +450,16 @@ test("8. importer populates state.json", async () => {
 // session and assert the directive text lands. Skipped where tmux isn't installed.
 
 const HAS_TMUX = spawnSync("tmux", ["-V"]).status === 0;
-const TSOCK = `hermestest-${process.pid}`;
+const TSOCK = `obstest-${process.pid}`;
 const tmuxq = (...a) => execFileSync("tmux", ["-L", TSOCK, ...a], { encoding: "utf8" });
 
 test("idle steering: an armed directive is typed into an idle session via tmux", { skip: HAS_TMUX ? false : "tmux not installed" }, async () => {
   const dir = await tmpDir("tmux");
   const h = await startCollector(
-    { HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" },
+    { OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" },
     4131,
   );
-  const cwd = path.join(os.tmpdir(), `hermes-tmux-cwd-${process.pid}`);
+  const cwd = path.join(os.tmpdir(), `observer-tmux-cwd-${process.pid}`);
   const target = "standin";
   // Stand-in TUI: prints an empty "❯ " prompt, echoes each submitted line as GOT:<line>.
   const PROG = `printf '%s' '❯ '; while IFS= read -r line; do printf '\\nGOT:%s\\n%s' "$line" '❯ '; done`;
@@ -485,10 +485,10 @@ test("idle steering: an armed directive is typed into an idle session via tmux",
     const created = await q.json();
     assert.equal(created.status, "armed", "context auto-arms in autonomous mode");
 
-    // 5) The stand-in should have received the typed, [Hermes]-prefixed prompt.
+    // 5) The stand-in should have received the typed, [observer]-prefixed prompt.
     await sleep(700);
     const pane = tmuxq("capture-pane", "-p", "-t", target);
-    assert.match(pane, /GOT:\[Hermes\] follow the existing util/, "directive typed into idle session");
+    assert.match(pane, /GOT:\[observer\] follow the existing util/, "directive typed into idle session");
 
     // 6) And the directive is recorded delivered via tmux.
     const snap = await (await fetch(`${h.base}/api/steer`)).json();
@@ -511,18 +511,18 @@ test("idle steering: an armed directive is typed into an idle session via tmux",
 });
 
 // ── Control grants: explicit, operator-only consent for autonomous idle steering ──
-// The end-state safety property: Hermes can REQUEST control (MCP) but can never GRANT it;
-// only the operator (REST) can. Before a grant the session is unsteerable; after, Hermes's
+// The end-state safety property: the agent can REQUEST control (MCP) but can never GRANT it;
+// only the operator (REST) can. Before a grant the session is unsteerable; after, the agent's
 // nudges auto-arm and land in the idle pane; revoke ends it. Skipped without tmux.
 
 test("control grant: request → operator grant → idle delivery; MCP cannot self-grant; revoke ends it",
   { skip: HAS_TMUX ? false : "tmux not installed" }, async () => {
   const dir = await tmpDir("ctl");
   // master ON, default mode OFF — so the ONLY way to steer is an explicit control grant.
-  const h = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on" }, 4133);
-  const cwd = path.join(os.tmpdir(), `hermes-ctl-cwd-${process.pid}`);
+  const h = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on" }, 4133);
+  const cwd = path.join(os.tmpdir(), `observer-ctl-cwd-${process.pid}`);
   const target = "ctlstandin";
-  const TS = `hermesctl-${process.pid}`;
+  const TS = `obsctl-${process.pid}`;
   const tq = (...a) => execFileSync("tmux", ["-L", TS, ...a], { encoding: "utf8" });
   const PROG = `printf '%s' '❯ '; while IFS= read -r line; do printf '\\nGOT:%s\\n%s' "$line" '❯ '; done`;
   const rpc = (msg) => fetch(`${h.base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg) }).then((r) => r.json());
@@ -545,7 +545,7 @@ test("control grant: request → operator grant → idle delivery; MCP cannot se
     assert.ok(tools.includes("request_control") && tools.includes("release_control"));
     assert.ok(!tools.some((n) => /grant|approve|set_mode|master/.test(n)), "MCP has no grant/approve/master tool");
 
-    // Hermes requests control → 'requested', NOT active.
+    // The agent requests control → 'requested', NOT active.
     const req = JSON.parse((await callTool("request_control", { session_id: "cx", task: "finish the migration" })).content[0].text);
     assert.equal(req.status, "requested");
 
@@ -562,11 +562,11 @@ test("control grant: request → operator grant → idle delivery; MCP cannot se
     const g = await (await fetch(`${h.base}/api/control/${req.id}/grant`, { method: "POST" })).json();
     assert.equal(g.status, "granted");
 
-    // Now Hermes's nudge auto-arms (granted ⇒ autonomous) and is typed into the idle pane.
+    // Now the agent's nudge auto-arms (granted ⇒ autonomous) and is typed into the idle pane.
     const created = JSON.parse((await callTool("steer_session", { session_id: "cx", kind: "nudge", text: "run the tests" })).content[0].text);
     assert.equal(created.status, "armed");
     await sleep(700);
-    assert.match(tq("capture-pane", "-p", "-t", target), /GOT:\[Hermes\] run the tests/, "directive typed under grant");
+    assert.match(tq("capture-pane", "-p", "-t", target), /GOT:\[observer\] run the tests/, "directive typed under grant");
 
     // Row reflects controlled + truly steerable; session detail carries control summary.
     row = (await (await fetch(`${h.base}/api/sessions`)).json()).find((r) => r.sessionId === "cx");
@@ -589,7 +589,7 @@ test("control grant: request → operator grant → idle delivery; MCP cannot se
 // ── hook steering off by default (idle-pane is the preferred channel) ──
 test("hook steering OFF by default: nudge/context skip the hook; block_tool still fires; runtime toggle restores it", async () => {
   const dir = await tmpDir("nohook");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" }, 4108);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" }, 4108);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "h1", cwd: "/x/nohook" });
     assert.equal((await (await fetch(`${S.base}/api/steer`)).json()).hookSteering, false, "default off");
@@ -616,9 +616,9 @@ test("hook steering OFF by default: nudge/context skip the hook; block_tool stil
 });
 
 // ── pane registration robustness (token file + cwd-collision ownership) ──
-test("collector writes a 0600 token file for the launch wrapper when HERMES_TOKEN is set", async () => {
+test("collector writes a 0600 token file for the launch wrapper when OBSERVER_TOKEN is set", async () => {
   const dir = await tmpDir("tokfile");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_TOKEN: "abc123" }, 4110);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_TOKEN: "abc123" }, 4110);
   try {
     const tf = path.join(dir, "token");
     assert.equal(await fsp.readFile(tf, "utf8"), "abc123");
@@ -628,7 +628,7 @@ test("collector writes a 0600 token file for the launch wrapper when HERMES_TOKE
 
 test("pane registration: cwd collision attaches only to the newest LIVE session", async () => {
   const dir = await tmpDir("panecwd");
-  const S = await startCollector({ HERMES_DATA_DIR: dir }, 4111);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir }, 4111);
   try {
     const cwd = "/x/sharedcwd"; // a plain checkout reused across runs (repo@main)
     await post(S.base, { hook_event_name: "SessionStart", session_id: "old", cwd });
@@ -648,9 +648,9 @@ test("boot does not trust a persisted tmux pane (stale 🖥 never resurrects)", 
   const dir = await tmpDir("staletmux");
   // Simulate a state.json written by an older build that persisted `tmux`.
   await fsp.writeFile(path.join(dir, "state.json"), JSON.stringify({
-    z9: { ...newSession("z9"), cwd: "/x/z", status: "idle", lastTs: 1, tmux: { server: "hermes", target: "dead-pane" } },
+    z9: { ...newSession("z9"), cwd: "/x/z", status: "idle", lastTs: 1, tmux: { server: "observer", target: "dead-pane" } },
   }));
-  const S = await startCollector({ HERMES_DATA_DIR: dir }, 4112);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir }, 4112);
   try {
     const row = (await (await fetch(`${S.base}/api/sessions`)).json()).find((r) => r.sessionId === "z9");
     assert.ok(row, "loaded the persisted session");
@@ -660,7 +660,7 @@ test("boot does not trust a persisted tmux pane (stale 🖥 never resurrects)", 
 
 test("steer vocabulary: permitted but no live pane → reach=unreachable, canSteer=false with why; directive still queues", async () => {
   const dir = await tmpDir("reach");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" }, 4113);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" }, 4113);
   try {
     await post(S.base, { hook_event_name: "SessionStart", session_id: "r1", cwd: "/x/nopane" });
     await post(S.base, { hook_event_name: "Stop", session_id: "r1" }); // idle, no pane, hookSteering off
@@ -684,10 +684,10 @@ test("steer vocabulary: permitted but no live pane → reach=unreachable, canSte
 test("decide: ExitPlanMode prompt is answered via tmux; a nudge is NOT typed into the menu",
   { skip: HAS_TMUX ? false : "tmux not installed" }, async () => {
   const dir = await tmpDir("decide");
-  const S = await startCollector({ HERMES_DATA_DIR: dir, HERMES_STEERING: "on", HERMES_STEER_DEFAULT_MODE: "autonomous" }, 4114);
-  const cwd = path.join(os.tmpdir(), `hermes-decide-cwd-${process.pid}`);
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir, OBSERVER_STEERING: "on", OBSERVER_STEER_DEFAULT_MODE: "autonomous" }, 4114);
+  const cwd = path.join(os.tmpdir(), `observer-decide-cwd-${process.pid}`);
   const target = "decstandin";
-  const TS = `hermesdec-${process.pid}`;
+  const TS = `obsdec-${process.pid}`;
   const tq = (...a) => execFileSync("tmux", ["-L", TS, ...a], { encoding: "utf8" });
   // Stand-in: paints a plan-approval menu, then echoes the picked line.
   const PROG = `printf '%s\\n%s\\n' '❯ 1. Yes, proceed' '  2. No, keep planning'; while IFS= read -r x; do printf 'PICKED:%s\\n' "$x"; done`;

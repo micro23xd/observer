@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking a look. hermes-observer is small on purpose, so a few ground rules
+Thanks for taking a look. observer is small on purpose, so a few ground rules
 keep it that way.
 
 ## Ground rules
@@ -38,5 +38,5 @@ offline. The few tmux-based tests skip themselves when tmux isn't installed.
 
 - Keep them focused; add or update a test for behavior changes.
 - `node --test` must pass on Node 20+.
-- Update the README / `docs/hermes-agent-guide.md` when you change an endpoint, an MCP
+- Update the README / `docs/agent-guide.md` when you change an endpoint, an MCP
   tool, or an env var — the REST and MCP surfaces are meant to mirror each other.

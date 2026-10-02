@@ -1,9 +1,17 @@
 {
-  "name": "hermes-observer",
+  "name": "observer",
   "version": "0.1.0",
   "description": "Zero-dependency observability and bounded steering for many parallel Claude Code sessions, with a REST + MCP read surface for an oversight agent.",
   "license": "MIT",
   "author": "Dominik Bauer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/micro23xd/observer.git"
+  },
+  "homepage": "https://github.com/micro23xd/observer#readme",
+  "bugs": {
+    "url": "https://github.com/micro23xd/observer/issues"
+  },
   "type": "module",
   "keywords": [
     "claude-code",

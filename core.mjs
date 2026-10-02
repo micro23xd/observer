@@ -1,6 +1,6 @@
 // core.mjs — shared event normalization + reducer + view builders.
 //
-// The single most important structural rule of hermes-observer: live hook events
+// The single most important structural rule of observer: live hook events
 // and imported transcript lines BOTH normalize into the same internal event shape,
 // then go through the SAME reduce(). Identical reduction is the point — do not fork.
 //

@@ -100,13 +100,13 @@ export function selectDirective(payload, directives, ctx) {
 // at the keyboard (transparency guardrail) on every kind.
 export function renderResponse(d) {
   const text = d.text || "";
-  const banner = `⚠ Hermes steered this session: ${text}`;
+  const banner = `⚠ observer steered this session: ${text}`;
   switch (d.kind) {
     case "nudge":
-      return { decision: "block", reason: `[Hermes] ${text}`, systemMessage: banner };
+      return { decision: "block", reason: `[observer] ${text}`, systemMessage: banner };
     case "context":
       return {
-        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `[Hermes] ${text}` },
+        hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: `[observer] ${text}` },
         systemMessage: banner,
       };
     case "block_tool":
@@ -114,7 +114,7 @@ export function renderResponse(d) {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
-          permissionDecisionReason: `[Hermes] ${text}`,
+          permissionDecisionReason: `[observer] ${text}`,
         },
         systemMessage: banner,
       };
@@ -124,16 +124,16 @@ export function renderResponse(d) {
 }
 
 // ── Control grants (explicit, scoped, operator-consented autonomy) ──
-// A grant is the "take control of a task" handshake: Hermes REQUESTS (it can never grant
+// A grant is the "take control of a task" handshake: the agent REQUESTS (it can never grant
 // itself — no MCP grant tool exists), the operator GRANTS, and while active the session is
-// treated as autonomous for steering — bounded by a TTL, ended early when Hermes marks the
+// treated as autonomous for steering — bounded by a TTL, ended early when the agent marks the
 // task done (release), and revocable instantly. The grant IS the consent; it overrides an
 // otherwise-`off` session. block_tool still never auto-arms, even under a grant.
 export const GRANT_STATUS = {
-  REQUESTED: "requested", // Hermes asked; awaiting operator approval (not yet active)
+  REQUESTED: "requested", // The agent asked; awaiting operator approval (not yet active)
   GRANTED: "granted",     // operator approved; active until TTL / release / revoke
   DENIED: "denied",       // operator declined (terminal)
-  RELEASED: "released",   // Hermes gave it back, task done (terminal)
+  RELEASED: "released",   // The agent gave it back, task done (terminal)
   REVOKED: "revoked",     // operator pulled it (terminal)
   EXPIRED: "expired",     // TTL elapsed (terminal)
 };
@@ -144,7 +144,7 @@ export const DEFAULT_GRANT_TTL_MS = 30 * 60 * 1000;
 export function isGrantActive(g, now) {
   return !!g && g.status === GRANT_STATUS.GRANTED && (!g.expiresTs || now < g.expiresTs);
 }
-// Pending = requested by Hermes, waiting for the operator's explicit yes.
+// Pending = requested by the agent, waiting for the operator's explicit yes.
 export function isGrantPending(g) {
   return !!g && g.status === GRANT_STATUS.REQUESTED;
 }
@@ -191,10 +191,10 @@ export function decisionPromptReady(paneText) {
 }
 
 // The literal text we type into an idle prompt. Prefixed so the developer scrolling their
-// own transcript sees it came from Hermes — same transparency intent as the systemMessage
+// own transcript sees it came from the agent — same transparency intent as the systemMessage
 // banner on the hook path (which an idle send-keys can't carry).
 export function renderTmuxText(d) {
-  return `[Hermes] ${d && d.text ? d.text : ""}`;
+  return `[observer] ${d && d.text ? d.text : ""}`;
 }
 
 // Given a terminal capture, is the agent's prompt line empty (safe to type into)? We find

@@ -94,21 +94,21 @@ test("delivered directive is never re-selected", () => {
 test("renderResponse nudge → decision:block + reason + banner", () => {
   const r = renderResponse(dir({ kind: "nudge", text: "add tests" }));
   assert.equal(r.decision, "block");
-  assert.equal(r.reason, "[Hermes] add tests");
-  assert.match(r.systemMessage, /Hermes steered this session: add tests/);
+  assert.equal(r.reason, "[observer] add tests");
+  assert.match(r.systemMessage, /observer steered this session: add tests/);
 });
 
 test("renderResponse context → hookSpecificOutput.additionalContext", () => {
   const r = renderResponse(dir({ kind: "context", text: "prefer fp" }));
   assert.equal(r.hookSpecificOutput.hookEventName, "UserPromptSubmit");
-  assert.equal(r.hookSpecificOutput.additionalContext, "[Hermes] prefer fp");
+  assert.equal(r.hookSpecificOutput.additionalContext, "[observer] prefer fp");
 });
 
 test("renderResponse block_tool → permissionDecision:deny + reason", () => {
   const r = renderResponse(dir({ kind: "block_tool", text: "no migrations" }));
   assert.equal(r.hookSpecificOutput.hookEventName, "PreToolUse");
   assert.equal(r.hookSpecificOutput.permissionDecision, "deny");
-  assert.equal(r.hookSpecificOutput.permissionDecisionReason, "[Hermes] no migrations");
+  assert.equal(r.hookSpecificOutput.permissionDecisionReason, "[observer] no migrations");
 });
 
 // ── initialStatus (arming policy) ─────────────────────────────────────────
@@ -169,10 +169,10 @@ test("isTmuxDeliverable: context & nudge collapse to 'type a prompt'; block_tool
   assert.equal(isTmuxDeliverable("bogus"), false);
 });
 
-test("renderTmuxText: prefixes [Hermes] so the typed prompt is attributable", () => {
-  assert.equal(renderTmuxText({ text: "also add tests" }), "[Hermes] also add tests");
-  assert.equal(renderTmuxText({}), "[Hermes] ");
-  assert.equal(renderTmuxText(null), "[Hermes] ");
+test("renderTmuxText: prefixes [observer] so the typed prompt is attributable", () => {
+  assert.equal(renderTmuxText({ text: "also add tests" }), "[observer] also add tests");
+  assert.equal(renderTmuxText({}), "[observer] ");
+  assert.equal(renderTmuxText(null), "[observer] ");
 });
 
 test("promptIsEmpty: only an empty prompt line is safe to type into", () => {
