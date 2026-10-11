@@ -6,6 +6,7 @@ import { handleMcpMessage, TOOLS, PROTOCOL_VERSION } from "./mcp.mjs";
 
 const stubApi = {
   sessions: async () => [{ sessionId: "s1", repo: "demo", status: "working" }],
+  features: async () => [{ feature: "chat-stop-button", branch: "chat-stop-button", root: "/w/ws", waiting: null, targetSessionId: "s1", sessions: [{ sessionId: "s1" }] }],
   digest: async (since) => ({ sinceMs: 1800000, rows: [{ sessionId: "s1", since }] }),
   session: async (id) => (id === "s1" ? { sessionId: "s1", turns: 3 } : null),
   sessionEvents: async (id, types, limit) => (id === "s1" ? [{ kind: "tool", tool: "Edit", types, limit }] : null),
@@ -36,14 +37,14 @@ test("notifications get no response", async () => {
   assert.equal(await handleMcpMessage({ jsonrpc: "2.0", method: "notifications/initialized" }, stubApi), null);
 });
 
-test("tools/list returns the 10 tools (5 read + 3 steer + 2 control) with schemas", async () => {
+test("tools/list returns the 11 tools (6 read + 3 steer + 2 control) with schemas", async () => {
   const r = await handleMcpMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }, stubApi);
-  assert.equal(r.result.tools.length, 10);
+  assert.equal(r.result.tools.length, 11);
   assert.deepEqual(r.result.tools.map((t) => t.name).sort(),
-    ["cancel_steer", "list_sessions", "list_steers", "recent_activity", "release_control",
+    ["cancel_steer", "list_features", "list_sessions", "list_steers", "recent_activity", "release_control",
       "request_control", "session_events", "session_summary", "session_transcript", "steer_session"]);
   for (const t of r.result.tools) assert.equal(t.inputSchema.type, "object");
-  assert.equal(TOOLS.length, 10);
+  assert.equal(TOOLS.length, 11);
 });
 
 test("tools/call list_sessions wraps api output as text content", async () => {
@@ -51,6 +52,26 @@ test("tools/call list_sessions wraps api output as text content", async () => {
   assert.equal(r.result.content[0].type, "text");
   assert.deepEqual(JSON.parse(r.result.content[0].text), [{ sessionId: "s1", repo: "demo", status: "working" }]);
   assert.ok(!r.result.isError);
+});
+
+test("tools/call list_features wraps the api's feature board as text content", async () => {
+  const r = await handleMcpMessage({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_features", arguments: {} } }, stubApi);
+  assert.ok(!r.result.isError);
+  const feats = JSON.parse(r.result.content[0].text);
+  assert.equal(feats.length, 1);
+  assert.equal(feats[0].feature, "chat-stop-button");
+  assert.equal(feats[0].targetSessionId, "s1");
+  assert.deepEqual(feats[0].sessions, [{ sessionId: "s1" }]);
+});
+
+test("list_features is a read tool: no arguments, and it never touches the write api", async () => {
+  const tool = TOOLS.find((t) => t.name === "list_features");
+  assert.deepEqual(tool.inputSchema, { type: "object", properties: {}, additionalProperties: false });
+  const writes = [];
+  const api = { features: stubApi.features, steerCreate: () => { writes.push("steerCreate"); }, controlRequest: () => { writes.push("controlRequest"); } };
+  const r = await handleMcpMessage({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "list_features", arguments: { session_id: "s1", text: "ignored" } } }, api);
+  assert.ok(!r.result.isError);
+  assert.deepEqual(writes, []);
 });
 
 test("tools/call forwards arguments", async () => {

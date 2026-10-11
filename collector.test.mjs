@@ -106,7 +106,7 @@ test("2. reducer correctness", async () => {
 test("MCP: /mcp tools/list + tools/call list_sessions over JSON-RPC", async () => {
   const rpc = (msg) => fetch(`${H.base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(msg) });
   const list = await (await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" })).json();
-  assert.equal(list.result.tools.length, 10);
+  assert.equal(list.result.tools.length, 11);
   const call = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "list_sessions", arguments: {} } })).json();
   const rows = JSON.parse(call.result.content[0].text);
   assert.ok(Array.isArray(rows));
@@ -373,6 +373,14 @@ test("6. auth: bearer required for non-loopback model (token set)", async () => 
     assert.equal(evNoTok.status, 401, "/events requires bearer when token set");
     const evTok = await post(A.base, { hook_event_name: "SessionStart", session_id: "z", cwd: "/z" }, { authorization: "Bearer secret" });
     assert.equal(evTok.status, 200, "/events ingests with the bearer");
+    // The feature board is a read surface like any other: same gate, REST and MCP.
+    const featNoTok = await fetch(`${A.base}/api/features`);
+    assert.equal(featNoTok.status, 401, "/api/features requires bearer when token set");
+    const featTok = await fetch(`${A.base}/api/features`, { headers: { authorization: "Bearer secret" } });
+    assert.equal(featTok.status, 200, "/api/features works with bearer");
+    assert.deepEqual(await featTok.json(), []);
+    const mcpFeatNoTok = await fetch(`${A.base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_features","arguments":{}}}' });
+    assert.equal(mcpFeatNoTok.status, 401, "list_features requires bearer when token set");
   } finally { await stop(A); await fsp.rm(dir, { recursive: true, force: true }); }
 });
 
@@ -739,4 +747,226 @@ test("decide: ExitPlanMode prompt is answered via tmux; a nudge is NOT typed int
     await fsp.rm(dir, { recursive: true, force: true });
     await fsp.rm(cwd, { recursive: true, force: true });
   }
+});
+
+// ── Feature records: features/<slug>/status.json groups a workspace's sessions ──
+// Fixtures are fabricated on disk (a `.git` dir with a HEAD, no real git needed). The
+// collector caches each directory for a few seconds, so every test builds its own fresh
+// workspace and writes all its files BEFORE the first request.
+
+async function makeWorkspace(root, branch, records = {}) {
+  await fsp.mkdir(path.join(root, ".git"), { recursive: true });
+  await fsp.writeFile(path.join(root, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
+  for (const [slug, body] of Object.entries(records)) {
+    await fsp.mkdir(path.join(root, "features", slug), { recursive: true });
+    await fsp.writeFile(path.join(root, "features", slug, "status.json"), typeof body === "string" ? body : JSON.stringify(body));
+  }
+}
+const features = async (base) => (await fetch(`${base}/api/features`)).json();
+const mcpFeatures = async (base) => JSON.parse((await (await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_features", arguments: {} } }) })).json()).result.content[0].text);
+// Rows carry request-time ages; drop them to compare two reads of the same state.
+const noAge = (v) => JSON.parse(JSON.stringify(v, (k, x) => (k === "ageMs" ? undefined : x)));
+
+const RECORD = {
+  feature: "chat-stop-button", title: "Stop button for chat", mode: "hands-off", branch: "chat-stop-button",
+  stage: "building", now: "Backend: endpoint",
+  waiting: { question: "Soft delete or hard delete?", options: ["Soft delete", "Hard delete"], recommendation: "Soft delete", since: "2026-10-11T21:49:11.513Z" },
+  verified: [{ what: "List shows items", evidence: "evidence/01-list.png", at: "2026-10-11T21:49:11.513Z" }],
+  prs: [{ repo: "backend", url: "https://github.com/acme/backend/pull/999" }],
+  actions: [{ label: "Verify", text: "Run the feature-verify skill for this feature." }],
+  created: "2026-10-11T21:49:11.331Z", updated: "2026-10-11T21:49:11.575Z",
+};
+
+test("features: root + nested sessions group under the workspace's active record; MCP list_features mirrors REST", async () => {
+  const base = await tmpDir("feat");
+  const root = path.join(base, "adhesive-tarsier"); // the dir name is not the branch
+  await makeWorkspace(root, "chat-stop-button", {
+    "chat-stop-button": RECORD,
+    "shipped-last-month": { feature: "shipped-last-month", branch: "shipped-last-month", title: "inherited history" },
+  });
+  // A nested repo checkout on its own branch — sessions there still belong to the workspace.
+  const nested = path.join(root, "repos", "backend");
+  await makeWorkspace(nested, "some-backend-branch");
+  try {
+    await post(H.base, { hook_event_name: "SessionStart", session_id: "f-root", cwd: root });
+    await post(H.base, { hook_event_name: "Stop", session_id: "f-root" });
+    await post(H.base, { hook_event_name: "SessionStart", session_id: "f-nested", cwd: nested });
+    await post(H.base, { hook_event_name: "UserPromptSubmit", session_id: "f-nested", prompt: "add the endpoint" });
+    await post(H.base, { hook_event_name: "SessionStart", session_id: "f-outside", cwd: path.join(base, "unrelated") });
+    await sleep(150);
+
+    const feats = (await features(H.base)).filter((f) => f.root === root);
+    assert.equal(feats.length, 1, "one active feature; the other-branch record is ignored");
+    const f = feats[0];
+    const { root: _r, slug, attention, targetSessionId, sessions, ...record } = f;
+    assert.deepEqual(record, RECORD, "record fields pass through");
+    assert.equal(slug, "chat-stop-button");
+    assert.equal(attention, true, "a pending waiting question needs the operator");
+    assert.deepEqual(sessions.map((r) => r.sessionId).sort(), ["f-nested", "f-root"]);
+    assert.equal(targetSessionId, "f-root", "the live session AT the root is the default target, though the nested one is newer");
+
+    // Sessions are the very rows /api/sessions returns (steer object included).
+    const rows = await (await fetch(`${H.base}/api/sessions`)).json();
+    for (const r of sessions) {
+      assert.deepEqual(noAge(r), noAge(rows.find((x) => x.sessionId === r.sessionId)));
+      assert.equal(typeof r.steer.canSteer, "boolean");
+    }
+    assert.ok(rows.find((x) => x.sessionId === "f-outside"), "a session outside any workspace stays a plain session");
+
+    // MCP mirror.
+    assert.deepEqual(noAge((await mcpFeatures(H.base)).filter((x) => x.root === root)), noAge(feats));
+  } finally { await fsp.rm(base, { recursive: true, force: true }); }
+});
+
+test("features: sorted by who needs the operator — waiting, then session attention, then most recently updated", async () => {
+  const base = await tmpDir("featsort");
+  const mk = async (name, record, hooks) => {
+    const root = path.join(base, name);
+    await makeWorkspace(root, name, { [name]: { feature: name, branch: name, ...record } });
+    await post(H.base, { hook_event_name: "SessionStart", session_id: `fs-${name}`, cwd: root });
+    for (const h of hooks) await post(H.base, { session_id: `fs-${name}`, ...h });
+  };
+  try {
+    await mk("calm-old", { updated: "2026-10-01T00:00:00Z" }, [{ hook_event_name: "Stop" }]);
+    await mk("calm-new", { updated: "2026-10-10T00:00:00Z" }, [{ hook_event_name: "Stop" }]);
+    await mk("erroring", { updated: "2026-09-01T00:00:00Z" }, [{ hook_event_name: "PostToolUseFailure", tool_name: "Bash", tool_response: { stderr: "boom" } }]);
+    await mk("asking", { updated: "2026-08-01T00:00:00Z", waiting: { question: "Ship it?" } }, [{ hook_event_name: "Stop" }]);
+    await sleep(150);
+    const order = (await features(H.base)).filter((f) => f.root.startsWith(base)).map((f) => f.feature);
+    assert.deepEqual(order, ["asking", "erroring", "calm-new", "calm-old"]);
+  } finally { await fsp.rm(base, { recursive: true, force: true }); }
+});
+
+test("features: malformed, oversized and hostile status.json never break the endpoint or leak unknown fields", async () => {
+  const base = await tmpDir("feathostile");
+  const junk = async (name, body) => {
+    const root = path.join(base, name);
+    await makeWorkspace(root, "main", { rec: body });
+    await post(H.base, { hook_event_name: "SessionStart", session_id: `fh-${name}`, cwd: root });
+    return root;
+  };
+  try {
+    await junk("bad-json", "{ definitely not json");
+    await junk("empty", "");
+    await junk("array", "[]");
+    await junk("no-branch", { feature: "x" });
+    await junk("wrong-types", { feature: ["x"], branch: { name: "main" } });
+    await junk("huge", JSON.stringify({ feature: "huge", branch: "main", now: "x".repeat(200_000) }));
+    const dirRoot = await junk("status-is-a-dir", { feature: "placeholder", branch: "main" });
+    await fsp.rm(path.join(dirRoot, "features", "rec", "status.json"));
+    await fsp.mkdir(path.join(dirRoot, "features", "rec", "status.json"));
+    const hostile = await junk("hostile", {
+      feature: "<script>alert(1)</script>", branch: "main",
+      title: "\"><img src=x onerror=alert(1)>", mode: 7, stage: { evil: true }, now: "line1\nline2",
+      waiting: { question: "<b>pwn</b>?", options: ["a", 5, { o: 1 }], recommendation: ["x"], since: "never" },
+      verified: [{ what: "ok" }, "nope", { evidence: "only" }],
+      prs: [{ repo: "x", url: "javascript:alert(1)" }, { repo: "y", url: "http://insecure.test/1" }, { repo: "ok", url: "https://github.com/a/b/pull/1" }],
+      actions: [{ label: "Go", text: "do\nthe thing" }, { label: "no text" }, "str", { label: "Long", text: "x".repeat(5000) }],
+      created: "garbage", updated: 12345,
+      sessions: [{ sessionId: "forged" }], targetSessionId: "forged", root: "/etc", steer: { canSteer: true }, extra: "field",
+    });
+    await sleep(150);
+
+    const res = await fetch(`${H.base}/api/features`);
+    assert.equal(res.status, 200, "endpoint survives every malformed record");
+    const mine = (await res.json()).filter((f) => f.root.startsWith(base));
+    assert.deepEqual(mine.map((f) => f.root), [hostile], "only the parseable record becomes a feature");
+    const f = mine[0];
+    // Text is returned as inert data (the dashboard escapes it); types and shape are enforced.
+    assert.equal(f.feature, "<script>alert(1)</script>");
+    assert.equal(f.title, "\"><img src=x onerror=alert(1)>");
+    assert.ok(!("mode" in f) && !("stage" in f) && !("created" in f) && !("updated" in f) && !("extra" in f) && !("steer" in f));
+    assert.equal(f.now, "line1 line2");
+    assert.deepEqual(f.waiting, { question: "<b>pwn</b>?", options: ["a"] });
+    assert.deepEqual(f.verified, [{ what: "ok" }]);
+    assert.deepEqual(f.prs, [{ repo: "ok", url: "https://github.com/a/b/pull/1" }], "only https:// PR links survive");
+    assert.deepEqual(f.actions, [{ label: "Go", text: "do the thing" }]);
+    // Record fields can't forge the collector-owned ones.
+    assert.equal(f.root, hostile);
+    assert.equal(f.targetSessionId, "fh-hostile");
+    assert.deepEqual(f.sessions.map((r) => r.sessionId), ["fh-hostile"]);
+    // The MCP mirror survives too, and ingest is unaffected.
+    assert.ok((await mcpFeatures(H.base)).some((x) => x.root === hostile));
+    assert.equal((await post(H.base, { hook_event_name: "Stop", session_id: "fh-hostile" })).status, 200);
+  } finally { await fsp.rm(base, { recursive: true, force: true }); }
+});
+
+test("features: the ignore list hides sessions from a feature, and the feature with them", async () => {
+  const base = await tmpDir("featign");
+  const root = path.join(base, "ws-ignoreme");
+  await makeWorkspace(root, "main", { f: { feature: "f", branch: "main" } });
+  const nested = path.join(root, "repos", "noisy-helper");
+  await fsp.mkdir(nested, { recursive: true });
+  const ign = (body) => fetch(`${H.base}/api/ignore`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const mine = async () => (await features(H.base)).filter((f) => f.root === root);
+  try {
+    await post(H.base, { hook_event_name: "SessionStart", session_id: "fi-root", cwd: root });
+    await post(H.base, { hook_event_name: "SessionStart", session_id: "fi-nested", cwd: nested });
+    await sleep(150);
+    assert.deepEqual((await mine())[0].sessions.map((r) => r.sessionId).sort(), ["fi-nested", "fi-root"]);
+    await ign({ add: ["noisy-helper"] });
+    assert.deepEqual((await mine())[0].sessions.map((r) => r.sessionId), ["fi-root"], "ignored nested repo drops out of the feature");
+    await ign({ add: ["ws-ignoreme"] });
+    assert.deepEqual(await mine(), [], "every session ignored → the feature is not discovered");
+    assert.ok(!(await mcpFeatures(H.base)).some((f) => f.root === root), "MCP honours the ignore list too");
+  } finally {
+    await ign({ remove: ["noisy-helper", "ws-ignoreme"] });
+    await fsp.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("features: a feature action is an ordinary steering directive — same gates, same reasons, same audit", async () => {
+  const dir = await tmpDir("feat-steer");
+  const base = await tmpDir("feat-steer-ws");
+  const root = path.join(base, "ws");
+  await makeWorkspace(root, "main", { f: { feature: "f", branch: "main", actions: [{ label: "Verify", text: "Run the feature-verify skill for this feature." }] } });
+  const S = await startCollector({ OBSERVER_DATA_DIR: dir }, 4115); // steering at its defaults: everything off
+  try {
+    await post(S.base, { hook_event_name: "SessionStart", session_id: "fa-root", cwd: root });
+    await post(S.base, { hook_event_name: "Stop", session_id: "fa-root" });
+    await sleep(120);
+    let f = (await features(S.base))[0];
+    const action = f.actions[0];
+    // What the dashboard sends for an action button: the record's text, as a nudge, to the target.
+    const send = () => sapi(S.base, "/api/steer", { sessionId: f.targetSessionId, kind: "nudge", text: action.text });
+
+    // 1. Master switch off (the default): refused, with the reason — on the row and on the attempt.
+    assert.equal(f.sessions[0].steer.canSteer, false);
+    assert.match(f.sessions[0].steer.why, /master switch is off/);
+    let r = await send();
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /master switch is off/);
+
+    // 2. Master on, session mode still off: refused, with that reason.
+    await sapi(S.base, "/api/steer/master", { enabled: true });
+    f = (await features(S.base))[0];
+    assert.equal(f.sessions[0].steer.permission, "off");
+    assert.match(f.sessions[0].steer.why, /mode is off/);
+    r = await send();
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /not steerable/);
+    assert.equal((await (await fetch(`${S.base}/api/steer`)).json()).directives.length, 0, "nothing was queued by the refused attempts");
+
+    // 3. Approval mode: the directive is created but waits for the operator — no bypass.
+    await sapi(S.base, "/api/steer/mode", { sessionId: "fa-root", mode: "approval" });
+    r = await send();
+    assert.equal(r.status, 200);
+    assert.equal(r.json.status, "proposed");
+    assert.equal(r.json.kind, "nudge");
+    assert.equal(r.json.text, action.text);
+    assert.ok(r.json.expiresTs > Date.now(), "the usual TTL applies");
+
+    // 4. Visible in the steering snapshot, audited as the operator's.
+    const snap = await (await fetch(`${S.base}/api/steer`)).json();
+    assert.equal(snap.pending, 1);
+    assert.deepEqual(snap.directives.map((d) => [d.id, d.sessionId, d.status, d.createdBy]), [[r.json.id, "fa-root", "proposed", "operator"]]);
+    const audit = await readAudit(dir, new RegExp(`"ev":"create","id":"${r.json.id}"`));
+    assert.match(audit, /"by":"operator","text":"Run the feature-verify skill for this feature\."/);
+
+    // 5. Permitted but unreachable (idle, no pane, hook delivery off): the row still says why.
+    f = (await features(S.base))[0];
+    assert.equal(f.sessions[0].steer.canSteer, false);
+    assert.match(f.sessions[0].steer.why, /no live pane/);
+  } finally { await stop(S); await fsp.rm(dir, { recursive: true, force: true }); await fsp.rm(base, { recursive: true, force: true }); }
 });

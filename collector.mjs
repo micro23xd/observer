@@ -9,6 +9,7 @@
 // Read surface (Tier 0..3) for the oversight agent, bearer-gated:
 //   /api/sessions  /api/digest  /api/session/:id  /api/session/:id/events
 //   /api/session/:id/transcript (raw .jsonl)  /stream (SSE)  POST /mcp (MCP mirror)
+//   /api/features (sessions grouped under their workspace's feature record)
 // Write surface: /api/steer*, /api/control*, /api/ignore, /api/session/:id/summarize.
 // Dashboard (GET /) is the only tokenless route; the server binds loopback by default and
 // the dashboard's own data calls are bearer-gated like any other client.
@@ -33,6 +34,7 @@ import {
   BUFFER_CAP, DECISION_TOOLS,
 } from "./core.mjs";
 import { resolveRepoInfo } from "./gitinfo.mjs";
+import { findWorkspace, buildFeatures } from "./features.mjs";
 import { loadVertexConfig, createVertex } from "./vertex.mjs";
 import { handleMcpMessage, TOOLS } from "./mcp.mjs";
 import {
@@ -388,6 +390,11 @@ async function handle(req, res) {
 
   if (req.method === "GET" && p === "/api/digest") {
     return sendJSON(res, 200, await apiDigest(url.searchParams.get("since")));
+  }
+
+  // Feature board: sessions grouped under their workspace's active feature record.
+  if (req.method === "GET" && p === "/api/features") {
+    return sendJSON(res, 200, await apiFeatures());
   }
 
   // Ignore list management (dashboard + operator). Bearer-gated like the rest.
@@ -1102,16 +1109,37 @@ function steerStatusFor(s) {
   };
 }
 
+// One Tier-0 row. steer: the full picture (reach × permission × control + net canSteer/why).
+// Replaces the old bare `steerable` boolean, which conflated "has a pane" with "can actually
+// steer". Shared by /api/sessions and /api/features so both surfaces show identical rows.
+function overviewRow(s, now) {
+  return { ...buildOverviewRow(s, now), steer: steerStatusFor(s) };
+}
+
 function apiSessions(opts = {}) {
   const now = Date.now();
   let rows = [...sessions.values()]
     .filter((s) => !matchesIgnore(s.repo, s.cwd))
-    // steer: the full picture (reach × permission × control + net canSteer/why). Replaces the
-    // old bare `steerable` boolean, which conflated "has a pane" with "can actually steer".
-    .map((s) => ({ ...buildOverviewRow(s, now), steer: steerStatusFor(s) }));
+    .map((s) => overviewRow(s, now));
   if (opts.activeOnly) rows = rows.filter((r) => r.status !== "stale" && r.status !== "ended");
   rows.sort((a, b) => (Number(b.attention) - Number(a.attention)) || (b.lastTs - a.lastTs));
   return rows;
+}
+
+// Feature board. A workspace root may carry features/<slug>/status.json (see features.mjs);
+// each record whose `branch` is the one checked out there becomes a feature, with every
+// non-ignored session running in or under that root attached as its /api/sessions row.
+// Discovery is session-driven — observer only learns a root from a session's cwd — and
+// happens HERE, at read time: the disk lookups are async and TTL-cached per directory, so
+// ingest never waits on them and reduce() never sees them. Each unique cwd resolves once.
+async function apiFeatures() {
+  const now = Date.now();
+  const live = [...sessions.values()].filter((s) => s.cwd && !matchesIgnore(s.repo, s.cwd));
+  const byCwd = new Map(); // cwd -> workspace | null
+  await Promise.all([...new Set(live.map((s) => s.cwd))].map(async (cwd) => {
+    byCwd.set(cwd, await findWorkspace(cwd).catch(() => null));
+  }));
+  return buildFeatures(live.map((s) => ({ workspace: byCwd.get(s.cwd), cwd: s.cwd, row: overviewRow(s, now) })));
 }
 
 async function apiDigest(sinceStr) {
@@ -1171,6 +1199,7 @@ function apiTranscriptText(id, maxBytes) {
 
 const mcpApi = {
   sessions: apiSessions,
+  features: apiFeatures,
   digest: apiDigest,
   session: apiSession,
   sessionEvents: apiSessionEvents,
