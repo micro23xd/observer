@@ -8,6 +8,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import vm from "node:vm";
 import { newSession, buildOverviewRow, STALE_MS } from "./core.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
@@ -969,4 +970,69 @@ test("features: a feature action is an ordinary steering directive — same gate
     assert.equal(f.sessions[0].steer.canSteer, false);
     assert.match(f.sessions[0].steer.why, /no live pane/);
   } finally { await stop(S); await fsp.rm(dir, { recursive: true, force: true }); await fsp.rm(base, { recursive: true, force: true }); }
+});
+
+// The dashboard has no DOM under test, but its card markup is built by a pure string
+// function. Load the embedded script into a bare vm context (stub document, no network) and
+// check the markup directly: a record that slipped past the sanitiser must still be inert.
+test("dashboard: feature card markup escapes every record value and explains a blocked send", async () => {
+  const html = await (await fetch(`${H.base}/`)).text();
+  assert.match(html, /<div id="features"><\/div>\s*<table>/, "features section sits above the sessions table");
+  const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const el = new Proxy(function () {}, { get: (_t, k) => (k === "value" || k === "textContent" ? "" : el), set: () => true, apply: () => el });
+  const ctx = vm.createContext({
+    document: { querySelector: () => el, querySelectorAll: () => [], createElement: () => el, activeElement: null },
+    localStorage: { getItem: () => "", setItem() {} }, fetch: async () => { throw new Error("offline"); }, setInterval: () => 0,
+  });
+  vm.runInContext(`${script}\n;globalThis.T={ card: featCardHtml, gate: featGate, refusal: featRefusal, steer: (o) => { Object.assign(steerState, o); } };`, ctx);
+  const { T } = ctx;
+
+  const evil = "\"><img src=x onerror=alert(1)><script>alert(2)</script>' onmouseover='alert(3)";
+  const st = { reach: "live-pane", permission: "autonomous", canSteer: true, deliverWhen: "now" };
+  const rows = [{ sessionId: evil, repo: evil, status: "idle", ageMs: 1000, steer: st }, { sessionId: "s2", repo: "ok", status: "idle", ageMs: 1, steer: st }];
+  const feature = {
+    root: evil, slug: evil, feature: evil, title: evil, mode: evil, stage: evil, now: evil, branch: evil, updated: "2026-10-11T00:00:00.000Z",
+    waiting: { question: evil, options: [evil, "plain"], recommendation: evil, since: "2026-10-11T00:00:00.000Z" },
+    verified: [{ what: evil, evidence: evil, at: evil }],
+    prs: [{ repo: evil, url: "https://example.test/pull/1" }, { repo: "js", url: "javascript:alert(4)" }, { repo: "http", url: "http://example.test/" }, { repo: "quote", url: `https://example.test/${evil}` }],
+    actions: [{ label: evil, text: evil }],
+    sessions: rows,
+  };
+  T.steer({ master: true });
+  const card = T.card(feature, rows, "s2");
+
+  // Every tag in the markup is one the template wrote, carrying only attributes it wrote:
+  // nothing from the record opened a tag or broke out of a quoted attribute.
+  const tags = [...card.matchAll(/<\/?([a-zA-Z0-9]+)((?:"[^"]*"|[^">])*)>/g)];
+  assert.ok(tags.length > 20);
+  for (const [whole, name, attrs] of tags) {
+    assert.ok(["div", "span", "button", "input", "select", "option", "a", "b"].includes(name), `unexpected tag ${whole.slice(0, 60)}`);
+    assert.match(attrs.replace(/="[^"]*"/g, ""), /^(\s+(class|title|style|href|target|rel|placeholder|value|data-fa|data-fsend|disabled|selected)(=[\w-]+)?)*\s*$/, `unexpected attribute in ${whole.slice(0, 80)}`);
+  }
+  assert.equal(card.replace(/<\/?[a-zA-Z0-9]+(?:"[^"]*"|[^">])*>/g, "").includes("<"), false, "no stray < outside the template's own tags");
+  assert.ok(card.includes("&lt;script&gt;alert(2)&lt;/script&gt;"), "record text is shown, escaped");
+  // Links: https only, new tab, noopener.
+  const links = [...card.matchAll(/<a href="([^"]*)" target="_blank" rel="noopener"/g)].map((m) => m[1]);
+  assert.equal(links.length, 2);
+  assert.ok(links.every((h) => h.startsWith("https://example.test/")));
+  assert.equal((card.match(/<a /g) || []).length, 2, "non-https PR entries render no link at all");
+
+  // A deliverable target: controls live, nothing to explain.
+  assert.ok(!card.includes(" disabled"));
+  assert.deepEqual({ ...T.gate(st) }, { block: false, text: "" });
+  // Blocked sends are disabled AND say why, in plain words.
+  assert.match(T.gate({ ...st, permission: "off", canSteer: false }).text, /not allowed for that session/);
+  assert.match(T.gate({ ...st, reach: "ended", canSteer: false }).text, /has ended/);
+  assert.match(T.gate({ ...st, reach: "unreachable", canSteer: false }).text, /no terminal observer can type into/);
+  assert.match(T.gate({ ...st, reach: "hook-only", canSteer: false }).text, /hook delivery is off/);
+  assert.equal(T.gate({ ...st, reach: "unreachable", canSteer: false }).block, false, "unreachable still queues — a warning, not a block");
+  T.steer({ master: false });
+  assert.match(T.gate(st).text, /Steering is switched off/);
+  const off = T.card(feature, rows, "s2");
+  assert.equal((off.match(/ disabled/g) || []).length, 3, "action button, message box and send are all disabled");
+  assert.ok(off.includes("Steering is switched off"));
+  // …and the collector's own refusals are translated rather than shown raw or swallowed.
+  assert.match(T.refusal("steering is disabled (master switch is off)", 400), /switched off/);
+  assert.match(T.refusal("session x is not steerable — set its mode to approval/autonomous, or request control first", 400), /mode is off/);
+  assert.match(T.refusal("", 500), /HTTP 500/);
 });

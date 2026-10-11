@@ -1332,6 +1332,27 @@ tr.row:hover .ign{opacity:1}.ign:hover{color:var(--err)}
 .steer .txt{width:260px}.steer .tm{width:70px}
 .pendpanel{padding:4px 12px;border-bottom:1px solid var(--line);background:#150f02}
 .pendpanel .dir{padding:1px 0}
+.fsec{padding:6px 12px 0;color:var(--dim);font-size:11px}
+.feat{margin:6px 12px 10px;border:1px solid var(--line);border-radius:4px;background:#0d1117}
+.feat.fattn{box-shadow:inset 3px 0 0 var(--err)}
+.feat.fwait{border-color:#5c4409;box-shadow:inset 3px 0 0 var(--warn)}
+.fhead{display:flex;gap:8px;align-items:baseline;padding:6px 10px 4px;flex-wrap:wrap}
+.fhead .ft{font-size:13px;font-weight:600}
+.fhead .fnow{color:var(--dim);max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fhead .fmeta{margin-left:auto;color:var(--dim)}
+.fq{margin:2px 10px 6px;padding:6px 10px;border:1px solid var(--warn);border-radius:4px;background:#3a2d08;color:var(--warn)}
+.fq .fqq{font-size:13px;font-weight:600;color:#ffd866}
+.fq .chip{margin:4px 4px 0 0;color:var(--fg)}
+.fline{padding:1px 10px;white-space:normal}
+.fline a{color:var(--acc);margin-right:8px}
+.fact{display:flex;gap:6px;align-items:center;padding:6px 10px 4px;flex-wrap:wrap}
+.fact input,.fact select{background:#11151c;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:3px 6px;font:inherit}
+.fact .ftxt{width:320px}
+.fact button:disabled,.fact input:disabled{opacity:.45;cursor:not-allowed}
+.fmsg{padding:0 10px 4px;white-space:normal}
+.fmsg.ok{color:var(--ok)}.fmsg.warn{color:var(--warn)}.fmsg.err{color:var(--err)}.fmsg.dim{color:var(--dim)}
+.feat table th{position:static}
+.feat table tr:last-child td{border-bottom:0}
 </style></head><body>
 <header>
 <h1>observer</h1>
@@ -1358,6 +1379,7 @@ tr.row:hover .ign{opacity:1}.ign:hover{color:var(--err)}
 <button id="scfg">save cfg</button>
 </div>
 <div class="pendpanel" id="pendpanel" style="display:none"></div>
+<div id="features"></div>
 <table><thead><tr>
 <th>repo@branch</th><th>status</th><th>age</th><th>turns</th><th>tools</th><th>edits</th><th>bash</th><th>err</th><th>files</th><th>tasks</th><th>doing now</th>
 </tr></thead><tbody id="tb"></tbody></table>
@@ -1397,31 +1419,39 @@ async function api(path,opts){
 }
 function age(ms){if(ms<0)ms=0;const s=ms/1e3;if(s<60)return Math.floor(s)+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h';return Math.floor(s/86400)+'d'}
 function num(n){return '<span class="'+(n?'num':'zero')+'">'+n+'</span>'}
-function esc(s){return (s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}
+function esc(s){return String(s==null?'':s).replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]))}
+// One session row. The sessions table and the feature cards both build their rows here, so
+// a session looks and drills down the same wherever it appears. "set" is the open-rows set
+// of the list the row lives in (a session can be expanded in a card and collapsed below).
+function sessionRow(r,set){
+  const repoBase=(r.repo||'').split('@')[0];
+  const tr=document.createElement('tr');tr.className='row'+(r.attention?' attn':'');
+  tr.innerHTML='<td>'+esc(r.repo||r.sessionId.slice(0,8))+(r.title?' <span class=kv>'+esc(r.title.slice(0,40))+'</span>':'')+
+      steerChip(r.steer)+
+      ' <span class=ign title="ignore '+esc(repoBase)+'">⊘</span></td>'+
+    '<td><span class="badge s-'+r.status+'">'+r.status+'</span></td>'+
+    '<td>'+age(r.ageMs)+'</td><td>'+num(r.turns)+'</td><td>'+num(r.toolCalls)+'</td><td>'+num(r.edits)+'</td>'+
+    '<td>'+num(r.bash)+'</td><td>'+(r.errors?'<span class=err>'+r.errors+'</span>':num(0))+'</td>'+
+    '<td>'+num(r.fileCount)+'</td><td>'+r.tasksDone+'/'+(r.tasksOpen+r.tasksDone)+'</td>'+
+    '<td class="now">'+esc(r.now||'')+'</td>';
+  tr.onclick=()=>toggle(r.sessionId,tr,set);
+  const ig=tr.querySelector('.ign');if(ig)ig.onclick=e=>{e.stopPropagation();if(repoBase)ignore('add',repoBase);};
+  return tr;
+}
 async function load(){
   await loadSteer();
+  await loadFeatures();
   const q=$('#active').checked?'?active=1':'';
   let rows;try{rows=await (await api('/api/sessions'+q)).json();}catch(e){return;}
   const tb=$('#tb');tb.innerHTML='';
   for(const r of rows){
-    const repoBase=(r.repo||'').split('@')[0];
-    const tr=document.createElement('tr');tr.className='row'+(r.attention?' attn':'');
-    tr.innerHTML='<td>'+esc(r.repo||r.sessionId.slice(0,8))+(r.title?' <span class=kv>'+esc(r.title.slice(0,40))+'</span>':'')+
-        steerChip(r.steer)+
-        ' <span class=ign title="ignore '+esc(repoBase)+'">⊘</span></td>'+
-      '<td><span class="badge s-'+r.status+'">'+r.status+'</span></td>'+
-      '<td>'+age(r.ageMs)+'</td><td>'+num(r.turns)+'</td><td>'+num(r.toolCalls)+'</td><td>'+num(r.edits)+'</td>'+
-      '<td>'+num(r.bash)+'</td><td>'+(r.errors?'<span class=err>'+r.errors+'</span>':num(0))+'</td>'+
-      '<td>'+num(r.fileCount)+'</td><td>'+r.tasksDone+'/'+(r.tasksOpen+r.tasksDone)+'</td>'+
-      '<td class="now">'+esc(r.now||'')+'</td>';
-    tr.onclick=()=>toggle(r.sessionId,tr);
-    const ig=tr.querySelector('.ign');if(ig)ig.onclick=e=>{e.stopPropagation();if(repoBase)ignore('add',repoBase);};
+    const tr=sessionRow(r,open);
     tb.appendChild(tr);
     if(open.has(r.sessionId))await expand(r.sessionId,tr);
   }
   $('#stamp').textContent=new Date().toLocaleTimeString();
 }
-async function toggle(id,tr){if(open.has(id)){open.delete(id);const n=tr.nextSibling;if(n&&n.classList.contains('drow'))n.remove();}else{open.add(id);await expand(id,tr);}}
+async function toggle(id,tr,set){if(set.has(id)){set.delete(id);const n=tr.nextSibling;if(n&&n.classList.contains('drow'))n.remove();}else{set.add(id);await expand(id,tr);}}
 async function expand(id,tr){
   const d=await (await api('/api/session/'+encodeURIComponent(id))).json();
   let row=tr.nextSibling;if(!row||!row.classList.contains('drow')){row=document.createElement('tr');row.className='drow';row.innerHTML='<td colspan=11 class=detail></td>';tr.after(row);}
@@ -1432,21 +1462,142 @@ async function expand(id,tr){
     '<h3>files touched</h3><div class=files>'+files+'</div>'+
     '<h3>tasks</h3><div class=tasks>'+tasks+'</div>'+
     '<h3>recent events <span class=filters><button data-f="">all</button><button data-f="tool">tool</button><button data-f="tool_result">tool_result</button><button data-f="prompt">prompt</button></span></h3>'+
-    '<div class=evs id=evs_'+css(id)+'></div>'+
+    '<div class=evs></div>'+
     steerSection(id,d.steer);
-  c.querySelectorAll('.filters button').forEach(b=>b.onclick=e=>{e.stopPropagation();loadEvents(id,b.dataset.f);});
+  // The events box is found inside THIS detail row, not by id: the same session can be open
+  // in a feature card and in the table at once.
+  const evs=c.querySelector('.evs');
+  c.querySelectorAll('.filters button').forEach(b=>b.onclick=e=>{e.stopPropagation();loadEvents(id,b.dataset.f,evs);});
   const ms=c.querySelector('[data-mode]');if(ms)ms.onchange=e=>{e.stopPropagation();steerAction('/api/steer/mode',{sessionId:id,mode:e.target.value});};
   const ab=c.querySelector('[data-add]');if(ab)ab.onclick=e=>{e.stopPropagation();const sec=ab.closest('.steer');const text=sec.querySelector('.txt').value.trim();if(!text)return;queueSteer(id,sec.querySelector('.skind').value,text,sec.querySelector('.tm').value.trim());};
   const cq=c.querySelector('[data-creq]');if(cq)cq.onclick=async e=>{e.stopPropagation();const task=c.querySelector('.ctltask').value.trim();if(!task)return;const r=await api('/api/control',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sessionId:id,task})});let g={};try{g=await r.json();}catch(_){}if(g&&g.id){await steerAction('/api/control/'+encodeURIComponent(g.id)+'/grant');}else{alert('control failed: '+(g.error||r.status));}};
   wireDirButtons(c);wireControlButtons(c);
-  loadEvents(id,'');
+  loadEvents(id,'',evs);
 }
-function css(s){return s.replace(/[^a-z0-9]/gi,'_')}
-async function loadEvents(id,f){
+async function loadEvents(id,f,el){
   const u='/api/session/'+encodeURIComponent(id)+'/events?limit=80'+(f?'&types='+f:'');
   const evs=await (await api(u)).json();
-  const el=document.getElementById('evs_'+css(id));if(!el)return;
+  if(!el)return;
   el.innerHTML=evs.map(e=>'<div class=ev><span class=k>'+esc(e.kind)+'</span>'+esc(e.tool?e.tool+' ':'')+esc((e.prompt||e.input&&e.input.file_path||e.input&&e.input.command||'')+'').slice(0,160)+(e.isError?' <span class=err>ERR</span>':'')+'</div>').join('')||'<div class=kv>none</div>';
+}
+// Feature board — one card per active feature record (GET /api/features), above the table.
+// A card shows the record (title, mode, stage, now, the waiting question, verified items,
+// PR links), the feature's sessions as ordinary session rows, and send controls. Sending is
+// the SAME call the per-session steering box makes (POST /api/steer), so the master switch,
+// the session's mode, approval, TTL and audit all apply unchanged — a card adds no powers.
+// Every record value is untrusted text from a file in the workspace: always through esc().
+let fopen=new Set();   // session rows expanded inside feature cards
+let ftarget={};        // feature key -> the session the operator picked to send to
+let fdraft={};         // feature key -> unsent message text (survives a re-render)
+let fmsg={};           // feature key -> {cls,text,ts}: outcome of the last send
+function fkey(f){return f.root+'|'+f.slug}
+function since(iso){const t=Date.parse(iso||'');return isNaN(t)?'':age(Date.now()-t)}
+function isHttps(u){return typeof u==='string'&&u.slice(0,8).toLowerCase()==='https://'}
+function sessLabel(r){return (r.repo||r.sessionId.slice(0,8))+' · '+r.status+' · '+age(r.ageMs)}
+// Can an instruction reach this session — and if not, why, in plain words. block=true means
+// the collector would refuse it (or it could never land), so the send controls are disabled.
+// The master switch being off is the default posture, so that note stays calm (dim).
+function featGate(st){
+  if(!steerState.master)return {block:true,calm:true,text:'Steering is switched off, so nothing can be sent. Turn it on with the "steering" button at the top of the page.'};
+  if(!st)return {block:true,text:'This feature has no session to send to.'};
+  if(st.reach==='ended')return {block:true,text:'That session has ended, so nothing can be delivered to it. Pick another session, or start a new one in this workspace.'};
+  if(st.permission==='off')return {block:true,text:'Steering is not allowed for that session yet (its mode is off). Click the session below and set its mode to approval or autonomous.'};
+  if(st.canSteer)return {block:false,text:''};
+  if(st.reach==='unreachable')return {block:false,text:'That session is idle and has no terminal observer can type into. A message will wait and then expire unless the session becomes reachable. Start sessions through the tmux wrapper to reach them while idle.'};
+  return {block:false,text:'That session has no terminal observer can type into, and hook delivery is off. A message will wait and then expire. Turn on "hook delivery" in the steering cfg bar, or start the session through the tmux wrapper.'};
+}
+// The collector's refusal, in plain words (it is the authority; featGate only predicts it).
+function featRefusal(err,status){
+  err=String(err||'');
+  if(err.indexOf('master switch')>=0)return 'steering is switched off. Turn it on with the "steering" button at the top of the page.';
+  if(err.indexOf('not steerable')>=0)return 'steering is not allowed for that session (its mode is off). Click the session below and set its mode to approval or autonomous.';
+  if(err.indexOf('queue full')>=0)return 'that session already has the maximum number of messages waiting. Cancel one, or wait for them to be delivered.';
+  return err||('the collector answered HTTP '+status);
+}
+// Card markup for one feature (everything except the session rows, which need live DOM).
+// Pure string building: "all" are the feature's sessions, "target" the chosen session id.
+function featCardHtml(f,all,target){
+  const k=fkey(f),w=f.waiting,trow=all.find(r=>r.sessionId===target),g=featGate(trow?trow.steer:null);
+  const dis=g.block?' disabled':'';
+  let h='<div class=fhead><span class=ft>'+esc(f.title||f.feature)+'</span>'+
+    (f.title?'<span class=kv>'+esc(f.feature)+'</span>':'')+
+    (f.mode?'<span class=chip title="mode">'+esc(f.mode)+'</span>':'')+
+    (f.stage?'<span class="badge s-starting" title="stage">'+esc(f.stage)+'</span>':'')+
+    (f.now?'<span class=fnow title="'+esc(f.now)+'">'+esc(f.now)+'</span>':'')+
+    '<span class=fmeta>'+(since(f.updated)?'updated '+since(f.updated)+' ago · ':'')+'⎇ '+esc(f.branch)+'</span></div>';
+  if(w){
+    const opts=w.options||[];
+    h+='<div class=fq>waiting on you'+(since(w.since)?' for '+since(w.since):'')+
+      '<div class=fqq>'+esc(w.question)+'</div>'+
+      (opts.length?'<div>'+opts.map(o=>'<span class=chip>'+esc(o)+(o===w.recommendation?' <b>recommended</b>':'')+'</span>').join('')+'</div>':'')+
+      (w.recommendation&&opts.indexOf(w.recommendation)<0?'<div>recommended: '+esc(w.recommendation)+'</div>':'')+'</div>';
+  }
+  const ver=f.verified||[];
+  if(ver.length)h+='<div class=fline><span class=kv>verified</span> '+ver.map(v=>
+    '<span title="'+esc(v.at||'')+'"><span style="color:var(--ok)">✓</span> '+esc(v.what)+(v.evidence?' <span class=kv>'+esc(v.evidence)+'</span>':'')+'</span>').join(' · ')+'</div>';
+  const prs=(f.prs||[]).filter(p=>isHttps(p.url));
+  if(prs.length)h+='<div class=fline><span class=kv>PRs</span> '+prs.map(p=>
+    '<a href="'+esc(p.url)+'" target="_blank" rel="noopener" title="'+esc(p.url)+'">'+esc(p.repo||p.url)+' ↗</a>').join('')+'</div>';
+  h+='<div class=fact>'+(f.actions||[]).map((a,i)=>
+      '<button data-fa="'+i+'" title="'+esc('sends: '+a.text)+'"'+dis+'>'+esc(a.label)+'</button>').join('')+
+    '<input class=ftxt placeholder="message to the agent…"'+dis+'><button data-fsend'+dis+'>send</button>'+
+    '<span class=kv>→</span>'+(all.length>1
+      ?'<select class=ftarget title="which session receives it">'+all.map(r=>'<option value="'+esc(r.sessionId)+'"'+(r.sessionId===target?' selected':'')+'>'+esc(sessLabel(r))+'</option>').join('')+'</select>'
+      :'<span class=kv>'+esc(trow?sessLabel(trow):'no session')+'</span>')+'</div>';
+  if(g.text)h+='<div class="fmsg '+(g.block&&!g.calm?'warn':'dim')+'">'+esc(g.text)+'</div>';
+  const m=fmsg[k];
+  if(m&&Date.now()-m.ts<60000)h+='<div class="fmsg '+m.cls+'">'+esc(m.text)+'</div>';
+  return h;
+}
+// Send one instruction for a feature. nudge is the dashboard's "give the agent this
+// instruction" kind: typed into an idle session as a fresh prompt, or handed over at the end
+// of the current turn. The outcome is always written on the card — never a silent failure.
+async function featSend(f,sid,text,fromBox){
+  const k=fkey(f),row=(f.sessions||[]).find(r=>r.sessionId===sid),who=row?(row.repo||sid.slice(0,8)):String(sid).slice(0,8);
+  const say=(cls,t)=>{fmsg[k]={cls:cls,text:t,ts:Date.now()};};
+  let r,j={};
+  try{r=await api('/api/steer',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sessionId:sid,kind:'nudge',text:text})});try{j=await r.json();}catch(e){}}
+  catch(e){r={ok:false,status:0};j={error:'the collector could not be reached'};}
+  if(!r.ok){say('err','Not sent: '+featRefusal(j.error,r.status));if(fromBox)fdraft[k]=text;}
+  else{
+    const st=row&&row.steer,when={now:'right away','when-idle':'as soon as the session is idle','next-hook':'at its next hook'};
+    if(j.status==='proposed')say('warn','Queued for '+who+', but it waits for your approval first. Approve it in the "pending approval" bar at the top of the page.');
+    else if(st&&st.canSteer)say('ok','Sent to '+who+'. It will be delivered '+(when[st.deliverWhen]||'shortly')+'.');
+    else say('warn','Queued for '+who+', but it cannot be delivered right now (see the note above). It expires in '+Math.round((steerState.ttlMs||0)/60000)+' min if that does not change.');
+  }
+  await loadSteer();await load();
+}
+async function loadFeatures(){
+  const el=$('#features');
+  let feats;try{const r=await api('/api/features');if(!r.ok)return;feats=await r.json();}catch(e){return;}
+  if(!Array.isArray(feats)||!feats.length){el.replaceChildren();return;} // no features → no box at all
+  const activeOnly=$('#active').checked,head=document.querySelector('thead').innerHTML;
+  // Built off-document and swapped in at the end, so a slow drill-down fetch never shows a
+  // half-drawn board and overlapping refreshes can't interleave their cards.
+  const box=document.createElement('div');
+  box.innerHTML='<div class=fsec>features ('+feats.length+')</div>';
+  for(const f of feats){
+    const k=fkey(f),all=f.sessions||[];
+    const target=all.some(r=>r.sessionId===ftarget[k])?ftarget[k]:f.targetSessionId;
+    const card=document.createElement('div');
+    card.className='feat'+(f.waiting?' fwait':(f.attention?' fattn':''));
+    card.innerHTML=featCardHtml(f,all,target)+'<table><thead>'+head+'</thead><tbody></tbody></table>';
+    const tb=card.querySelector('tbody');
+    for(const r of all){
+      if(activeOnly&&(r.status==='stale'||r.status==='ended'))continue;
+      const tr=sessionRow(r,fopen);tb.appendChild(tr);
+      if(fopen.has(r.sessionId))await expand(r.sessionId,tr);
+    }
+    if(!tb.children.length)card.querySelector('table').remove();
+    card.querySelectorAll('[data-fa]').forEach(b=>b.onclick=()=>{const a=(f.actions||[])[+b.dataset.fa];if(a)featSend(f,target,a.text,false);});
+    const txt=card.querySelector('.ftxt');txt.value=fdraft[k]||'';txt.oninput=()=>{fdraft[k]=txt.value;};
+    const go=()=>{const t=txt.value.trim();if(!t||txt.disabled)return;delete fdraft[k];txt.value='';featSend(f,target,t,true);};
+    card.querySelector('[data-fsend]').onclick=go;
+    txt.onkeydown=e=>{if(e.key==='Enter')go();};
+    const sel=card.querySelector('.ftarget');if(sel)sel.onchange=()=>{ftarget[k]=sel.value;delete fmsg[k];load();};
+    box.appendChild(card);
+  }
+  el.replaceChildren(...box.childNodes);
 }
 // Ignore list management.
 async function loadIgnore(){
@@ -1546,10 +1697,11 @@ $('#active').onchange=load;
 $('#tokbtn').onclick=()=>{authBlocked=false;askTok();loadIgnore();load();};
 $('#ignadd').onclick=()=>{const v=$('#ignin').value.trim();$('#ignin').value='';ignore('add',v);};
 $('#ignin').addEventListener('keydown',e=>{if(e.key==='Enter'){const v=e.target.value.trim();e.target.value='';ignore('add',v);}});
-// Auto-refresh rebuilds the expanded rows, so hold it while the operator is typing into (or
-// has an unsent draft in) a steer/control input — otherwise the text is wiped mid-edit.
-function editing(){const a=document.activeElement;if(a&&a.closest&&a.closest('#tb')&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))return true;
-  return [...document.querySelectorAll('#tb .txt,#tb .tm,#tb .ctltask')].some(i=>i.value.trim());}
+// Auto-refresh rebuilds the expanded rows and the feature cards, so hold it while the operator
+// is typing into (or has an unsent draft in) a steer/control/message input — otherwise the
+// text is wiped mid-edit.
+function editing(){const a=document.activeElement;if(a&&a.closest&&a.closest('#tb,#features')&&/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName))return true;
+  return [...document.querySelectorAll('#tb .txt,#tb .tm,#tb .ctltask,#features .txt,#features .tm,#features .ctltask,#features .ftxt')].some(i=>i.value.trim());}
 setInterval(()=>{if(!$('#auto').checked)return;if(editing()){$('#stamp').textContent='paused — unsent input';return;}load();},4000);
 loadIgnore();load();
 </script></body></html>`;
