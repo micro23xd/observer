@@ -30,6 +30,9 @@ tool call. Every one of these levers is default-deny and audited.
 - **Tiered read surface** (Tier 0 overview → Tier 3 raw transcript), mirrored 1:1 as a
   remote **MCP server** at `POST /mcp`.
 - **Live dashboard** with SSE, an ignore list, and steering controls.
+- **Feature board.** A workspace can carry a small status file for the feature it's
+  building. Its sessions are then grouped under that feature, with its stage, what it's
+  waiting on, and a box to send it an instruction.
 - **Backfill** from existing `~/.claude/projects` transcripts. Imported history goes
   through the same reducer as live hooks.
 - **Optional rolling summaries** via Vertex AI (Gemini). Without credentials it runs
@@ -102,6 +105,7 @@ fail fast: Claude Code treats hook timeouts and connection errors as non-blockin
 | Tier | REST | MCP tool | Use |
 | --- | --- | --- | --- |
 | 0 | `GET /api/sessions` (`?active=1`) | `list_sessions` | overview rows: status, counters, "doing now", steerability; attention-sorted |
+| 0 | `GET /api/features` | `list_features` | sessions grouped under their workspace's [feature record](#feature-records); needs-the-operator first |
 | 0/1 | `GET /api/digest?since=30m` | `recent_activity` | per-session activity in a window (`s\|m\|h\|d`) |
 | 1 | `GET /api/session/:id` | `session_summary` | full rollup: files, tasks, last error, summary |
 | 2 | `GET /api/session/:id/events?types=tool,tool_result&limit=150` | `session_events` | recent normalized events |
@@ -133,6 +137,86 @@ this is the common shape:
   }
 }
 ```
+
+## Feature records
+
+A session tells you what one agent is doing. A **feature record** tells you what a whole
+workspace is for. If a workspace root (a checkout or a git worktree) contains
+`features/<slug>/status.json`, observer groups every session running in that directory, or
+anywhere under it, beneath that feature, and the dashboard shows it as a card above the
+sessions table.
+
+observer only knows this file shape. It doesn't know or care which tool writes it, and it
+never writes to it.
+
+```json
+{
+  "feature": "chat-stop-button",
+  "title": "Stop button for chat",
+  "mode": "hands-off",
+  "branch": "chat-stop-button",
+  "stage": "building",
+  "now": "Backend: endpoint",
+  "waiting": { "question": "Soft delete or hard delete?", "options": ["Soft delete", "Hard delete"], "recommendation": "Soft delete", "since": "2026-10-11T21:49:11.513Z" },
+  "verified": [ { "what": "List shows items", "evidence": "evidence/01-list.png", "at": "2026-10-11T21:49:11.513Z" } ],
+  "prs": [ { "repo": "backend", "url": "https://github.com/acme/backend/pull/999" } ],
+  "actions": [ { "label": "Verify", "text": "Run the feature-verify skill for this feature." } ],
+  "created": "2026-10-11T21:49:11.331Z",
+  "updated": "2026-10-11T21:49:11.575Z"
+}
+```
+
+Only `feature` and `branch` are required. `waiting` is `null` (or absent) when nothing is
+waiting on you.
+
+- **The active-branch rule.** A record counts only while its `branch` is the branch
+  checked out in that workspace root. Records for other branches are inherited history and
+  are ignored. The branch is read from `.git` on disk (`.git/HEAD`, or the `gitdir:` a
+  worktree's `.git` file points at), never guessed from the directory name. A detached
+  HEAD has no active record.
+- **Which sessions belong.** observer walks up from a session's cwd to the nearest
+  directory that has a `features/` folder with an active record and a `.git` of its own.
+  A session in `<root>/repos/backend` therefore lands on `<root>`, even when
+  `repos/backend` is a separate checkout on another branch. The walk stops below your home
+  directory, at the filesystem root, or after 8 levels.
+- **The file is untrusted input.** Fields are whitelisted and type-checked, text is
+  flattened to one line and length-capped, `prs` keep only `https://` URLs, and a file
+  that is malformed or larger than 64 KB is skipped. A bad record never breaks the
+  endpoint; it just isn't a feature.
+- **Discovery is session-driven and cached.** A workspace shows up once a session reports
+  from it, and disappears when its sessions are pruned or [ignored](#ignore-list). Each
+  directory is re-read at most every 5 seconds, on the read path only. Ingest never waits
+  on it.
+
+`GET /api/features` (MCP: `list_features`) returns the active features with the record's
+fields plus `slug` (the record's directory name), `root`, `attention`, `targetSessionId`
+and `sessions`, the same rows `/api/sessions` returns. They're sorted by who needs you: a
+pending `waiting` question first, then any session flagged `attention`, then most recently
+`updated`.
+
+```bash
+curl -s -H "Authorization: Bearer $OBSERVER_TOKEN" localhost:4000/api/features | jq '.[] | {feature, stage, waiting, sessions: [.sessions[].sessionId]}'
+```
+
+### Actions
+
+Each card has one button per entry in the record's `actions` (the button shows `label`
+and sends `text`) and a free-text box. Both queue a `nudge` for one of the feature's
+sessions through the ordinary [steering](#steering-bounded-write-back) path, so the master
+switch, the session's mode, approval, the TTL and the audit log all apply exactly as they
+do for the per-session steering box. A card can't do anything that box can't.
+
+- The default target is the most recently active live session whose cwd is the workspace
+  root (`targetSessionId`), falling back to the most recently active session. With several
+  sessions you can pick another.
+- When a message can't be delivered, the card says why: steering is switched off, the
+  session's mode is off, the session has ended, or there's no pane or hook to reach it.
+- A button's `text` comes from a file in the workspace. Hover the button to read exactly
+  what it sends before you click, and prefer `approval` mode for workspaces you don't
+  fully trust.
+
+The `waiting` question is shown, not answered: there are no option buttons. Reply with the
+free-text box, or in the session.
 
 ## Auth and remote access
 
@@ -307,7 +391,11 @@ Everything is one pipeline, **normalize → reduce → view**:
 - **`mcp.mjs`** is the transport-agnostic JSON-RPC/MCP layer over the same view builders
   REST uses.
 - **`gitinfo.mjs`** resolves `repo@branch` for plain checkouts by reading `.git` on disk.
-  Worktree paths (`…/worktrees/<repo>/<branch>`) are parsed string-side.
+  Worktree paths (`…/worktrees/<repo>/<branch>`) are parsed string-side. It also reads the
+  branch checked out in one exact directory, which is what makes a feature record active.
+- **`features.mjs`** handles [feature records](#feature-records): sanitising the untrusted
+  `status.json`, matching a session's cwd to its workspace, picking the default steering
+  target, and the needs-the-operator sort. Its disk reads are async, capped and cached.
 - **`vertex.mjs`** is the one LLM touchpoint: service-account JWT → OAuth → `generateContent`.
 - **`import-claude.mjs`** is the one-shot backfill. It reduces per session, downgrades
   historical active sessions to `idle`, and merges into `state.json` without clobbering
@@ -333,7 +421,8 @@ Tests are colocated `*.test.mjs` files that use `node:test`. They run offline an
 only to temp dirs. tmux-based tests skip themselves when tmux isn't installed. The
 integration suite covers the acceptance criteria: reducer correctness, attention sort,
 digest window, drill-down filter, auth, timeout safety, importer merge, summary
-optionality, and graceful task degradation, plus the steering security model.
+optionality, and graceful task degradation, plus the steering security model and the
+feature-record rules (active branch, nested sessions, hostile files).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (zero deps, one reducer) and
 [ROADMAP.md](ROADMAP.md) for what's next.
