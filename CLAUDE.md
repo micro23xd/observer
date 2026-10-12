@@ -59,7 +59,14 @@ imported transcript line ─┘                                      │
   the same in-memory view builders back both REST and MCP.
 - **`gitinfo.mjs`** — fallback `.git`-on-disk repo/branch resolver (memoized) for *plain*
   checkouts only. Worktree paths are resolved string-side in `core.parseWorktreePath`
-  with no disk I/O.
+  with no disk I/O. Also `readCheckedOutBranch(root)`: the branch checked out in exactly
+  that directory (plain `.git` dir or worktree `.git` file), no walk-up, NOT memoized.
+- **`features.mjs`** — feature records (`<workspace>/features/<slug>/status.json`). Pure
+  half: `sanitizeRecord` (the file is untrusted: whitelist, type checks, caps, control
+  chars flattened), `candidateRoots` (bounded walk up from a cwd), `pickSteerTarget`,
+  `sortFeatures`, `buildFeatures`. Disk half: `findWorkspace`/`loadWorkspace`, async,
+  size-capped, cached per directory for a few seconds (`_clearCache()` is the test seam).
+  Called only from the collector's read path (`apiFeatures`).
 - **`vertex.mjs`** — the one LLM touchpoint. Service-account JWT → OAuth token → Vertex
   `generateContent`. `fetch` and clock are injectable for offline tests.
 - **`import-claude.mjs`** — one-shot backfill; groups transcript events by session,
@@ -89,11 +96,18 @@ imported transcript line ─┘                                      │
 - **Runtime config beats env.** For both the ignore list (`ignore.json`) and steering
   (`steer.json`), env vars are **boot seeds only**; dashboard/REST edits are authoritative
   and survive restart. Never make a knob env-only.
+- **Feature records are read-only, read-time, untrusted.** observer never writes
+  `status.json`, never reads it during ingest or in `reduce()`, and never trusts its
+  contents (everything goes through `sanitizeRecord`, and the dashboard escapes every
+  value). A record is active only when its `branch` is the branch checked out in its root.
+  Feature-card actions are plain `POST /api/steer` nudges: they add no way around the
+  steering gates.
 
 ## Tiered read surface (REST + MCP mirror each other)
 | Tier | REST | MCP tool |
 | --- | --- | --- |
 | 0 | `GET /api/sessions` | `list_sessions` |
+| 0 | `GET /api/features` | `list_features` |
 | 0/1 | `GET /api/digest?since=30m` | `recent_activity` |
 | 1 | `GET /api/session/:id` | `session_summary` |
 | 2 | `GET /api/session/:id/events` | `session_events` |
@@ -113,8 +127,9 @@ HTTP, stateless JSON-RPC) — no separate process.
 
 ## Testing conventions
 Each module has a colocated `*.test.mjs` using `node:test`. Pure modules (`core`,
-`steer`, `mcp`, `gitinfo`, `vertex`) test fully offline — `vertex` injects `fetch`/clock,
-`gitinfo` exposes `_clearCache()` as a test seam. The README lists the acceptance
+`steer`, `mcp`, `gitinfo`, `features`, `vertex`) test fully offline — `vertex` injects
+`fetch`/clock, `gitinfo` and `features` expose `_clearCache()` as a test seam and read
+fabricated `.git` layouts in temp dirs. The README lists the acceptance
 criteria the suite covers (reducer correctness, attention sort, digest window, auth,
 timeout safety, importer merge, summary optionality, graceful task degradation).
 

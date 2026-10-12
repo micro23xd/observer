@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { resolveRepoInfo, _clearCache } from "./gitinfo.mjs";
+import { resolveRepoInfo, readCheckedOutBranch, _clearCache } from "./gitinfo.mjs";
 
 const tmp = (tag) => fsp.mkdtemp(path.join(os.tmpdir(), `gitinfo-${tag}-`));
 
@@ -92,4 +92,53 @@ test("cache: second lookup returns the same cached object (no re-read)", async (
   const b = resolveRepoInfo(repo);
   assert.equal(a, b);
   assert.equal(b.branch, "main");
+});
+
+test("readCheckedOutBranch: plain checkout → branch from <root>/.git/HEAD", async () => {
+  const root = await tmp("branch-dir");
+  await fsp.mkdir(path.join(root, ".git"), { recursive: true });
+  await fsp.writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat/stop-button\n");
+  assert.equal(readCheckedOutBranch(root), "feat/stop-button");
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test("readCheckedOutBranch: worktree `.git` FILE → branch from the gitdir's HEAD, not the dir name", async () => {
+  const root = await tmp("branch-wt");
+  const wtGit = path.join(root, "main", ".git", "worktrees", "adhesive-tarsier");
+  await fsp.mkdir(wtGit, { recursive: true });
+  await fsp.writeFile(path.join(wtGit, "HEAD"), "ref: refs/heads/control-plane\n");
+  // the worktree directory is named after the workspace, NOT the branch
+  const work = path.join(root, "worktrees", "adhesive-tarsier");
+  await fsp.mkdir(work, { recursive: true });
+  await fsp.writeFile(path.join(work, ".git"), `gitdir: ${wtGit}\n`);
+  assert.equal(readCheckedOutBranch(work), "control-plane");
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test("readCheckedOutBranch: no walk-up, no memo, and no branch for a detached or broken HEAD", async () => {
+  const root = await tmp("branch-edge");
+  await fsp.mkdir(path.join(root, ".git"), { recursive: true });
+  const head = path.join(root, ".git", "HEAD");
+  await fsp.writeFile(head, "ref: refs/heads/one\n");
+  assert.equal(readCheckedOutBranch(root), "one");
+  // a branch switch is seen on the very next call (resolveRepoInfo would still say "one")
+  await fsp.writeFile(head, "ref: refs/heads/two\n");
+  assert.equal(readCheckedOutBranch(root), "two");
+  // a subdirectory is not a checkout root → undefined (resolveRepoInfo walks up; this must not)
+  const sub = path.join(root, "src");
+  await fsp.mkdir(sub);
+  assert.equal(readCheckedOutBranch(sub), undefined);
+  // detached HEAD is not "a branch"
+  await fsp.writeFile(head, "0123456789abcdef0123456789abcdef01234567\n");
+  assert.equal(readCheckedOutBranch(root), undefined);
+  // dangling gitdir pointer, garbage `.git` file, missing dir, empty input
+  const dangling = path.join(root, "dangling");
+  await fsp.mkdir(dangling);
+  await fsp.writeFile(path.join(dangling, ".git"), "gitdir: /nonexistent/gitdir\n");
+  assert.equal(readCheckedOutBranch(dangling), undefined);
+  await fsp.writeFile(path.join(dangling, ".git"), "not a pointer\n");
+  assert.equal(readCheckedOutBranch(dangling), undefined);
+  assert.equal(readCheckedOutBranch(path.join(root, "nope")), undefined);
+  assert.equal(readCheckedOutBranch(""), undefined);
+  await fsp.rm(root, { recursive: true, force: true });
 });
